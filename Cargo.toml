@@ -1,0 +1,23 @@
+[package]
+name = "rujutsu"
+version = "0.1.0"
+edition = "2021"
+description = "A standalone Magit-like TUI for Jujutsu (jj)"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+thiserror = "2"
+ratatui = "0.29"
+crossbeam-channel = "0.5"
+notify-debouncer-mini = "0.5"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+unicode-width = "0.2"
+fuzzy-matcher = "0.3.7"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+lto = true
