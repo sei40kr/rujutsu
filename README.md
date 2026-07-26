@@ -19,6 +19,10 @@ transient menus — without leaving the terminal.
 - **Evolog** — inspect a change's evolution.
 - **Live refresh** — the repository is watched and buffers update as the
   working copy changes.
+- **Copy to clipboard** — `y s` copies the value at point (a change id,
+  operation id, or file path) and `y b` the buffer's revision; a real
+  clipboard tool (wl-copy / xclip / xsel / pbcopy) is used when available so
+  failures are reported, else OSC 52 (works over SSH).
 - **Emacs-style key sequences** — multi-key bindings like `P p`, layered as
   transient > buffer-local > global.
 
@@ -78,7 +82,8 @@ Defaults (override any of these via config; see below):
 | `x` | Abandon / restore |
 | `e` | Edit |
 | `a` | Absorb |
-| `y` | Duplicate |
+| `D` | Duplicate |
+| `y s` / `y b` | Copy value at point / buffer revision to clipboard |
 | `S` | Split |
 | `v` | Evolog |
 | `u` | Undo |

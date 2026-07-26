@@ -31,6 +31,10 @@ pub enum Command {
     Help,
     OpLog,
     ProcessLog,
+    /// Copy the value at point (revision/operation/file) to the clipboard.
+    Copy,
+    /// Copy the revision the current buffer is about to the clipboard.
+    CopyRevision,
 }
 
 /// Pure cursor motions. Grouped so `dispatch` forwards them wholesale to
@@ -208,6 +212,16 @@ pub const COMMANDS: &[CommandInfo] = &[
         Command::ProcessLog,
         "process-log",
         "Show the jj process log",
+    ),
+    ci(
+        Command::Copy,
+        "copy",
+        "Copy the value at point to the clipboard",
+    ),
+    ci(
+        Command::CopyRevision,
+        "copy-revision",
+        "Copy the buffer's revision to the clipboard",
     ),
 ];
 
