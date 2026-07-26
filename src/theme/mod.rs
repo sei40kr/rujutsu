@@ -7,6 +7,10 @@ use std::str::FromStr;
 
 use ratatui::style::Color;
 
+// One theme per file: each `<name>.rs` here exposes `pub(super) fn build() ->
+// Theme` and gets one row in `PRESETS` below.
+mod tokyo_night;
+
 macro_rules! theme {
     ($($field:ident: $default:expr => $key:literal),+ $(,)?) => {
         #[derive(Debug, Clone)]
@@ -81,6 +85,47 @@ theme! {
     help_border:     Color::Cyan     => "help-border",
 }
 
+// ---------------------------------------------------------------------------
+// Built-in presets
+//
+// A preset is a named `Theme` constructor living in its own file. `theme =
+// "<name>"` in config.toml picks the base theme; `[colors]` overrides still
+// layer on top. Adding one is two edits: a new `src/theme/<name>.rs` exposing
+// `pub(super) fn build() -> Theme`, and a row in `PRESETS`.
+// ---------------------------------------------------------------------------
+
+impl Theme {
+    /// The built-in preset for `name`, or `None` if there is no such preset.
+    pub fn preset(name: &str) -> Option<Theme> {
+        PRESETS
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, build)| build())
+    }
+}
+
+/// A built-in preset: its config name and a constructor for the full theme.
+pub type Preset = (&'static str, fn() -> Theme);
+
+/// Every built-in preset. The single source of truth for `Theme::preset` and
+/// for enumerating names in warnings/help.
+pub const PRESETS: &[Preset] = &[("tokyo-night", tokyo_night::build)];
+
+/// Comma-separated preset names, for warning messages.
+pub fn preset_names() -> String {
+    PRESETS
+        .iter()
+        .map(|(n, _)| *n)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// `0xRRGGBB` literal to a truecolor `Color`. Keeps the per-theme palette
+/// tables readable; shared by every file in this module.
+pub(super) const fn rgb(hex: u32) -> Color {
+    Color::Rgb((hex >> 16) as u8, (hex >> 8) as u8, hex as u8)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -101,5 +146,21 @@ mod tests {
         let mut t = Theme::default();
         assert!(t.set("no-such-role", "red").is_err());
         assert!(t.set("diff-add", "not-a-color").is_err());
+    }
+
+    #[test]
+    fn preset_resolves_known_and_rejects_unknown() {
+        let t = Theme::preset("tokyo-night").expect("tokyo-night preset exists");
+        assert_eq!(t.diff_add, Color::Rgb(0x73, 0xda, 0xca)); // vc-added green
+        assert!(Theme::preset("no-such-theme").is_none());
+        assert!(preset_names().contains("tokyo-night"));
+    }
+
+    #[test]
+    fn colors_override_layers_on_top_of_a_preset() {
+        // A `[colors]` entry must still win over the chosen preset.
+        let mut t = Theme::preset("tokyo-night").unwrap();
+        t.set("diff-add", "#010203").unwrap();
+        assert_eq!(t.diff_add, Color::Rgb(1, 2, 3));
     }
 }

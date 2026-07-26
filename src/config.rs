@@ -2,6 +2,8 @@
 //!
 //! ```toml
 //! scrolloff = 3
+//! theme = "tokyo-night"  # a built-in preset (see theme::PRESETS); top-level,
+//!                        # so it must precede any [table] header
 //!
 //! [keys.global]
 //! "g"   = "refresh"
@@ -13,8 +15,8 @@
 //! [keys.op-log]
 //! "R" = "op-restore"
 //!
-//! [colors]            # role names: see src/theme.rs
-//! diff-add  = "green"
+//! [colors]            # role names: see src/theme/mod.rs
+//! diff-add  = "green"  # layered on top of the chosen preset
 //! cursor-bg = "#3a3a3a"
 //! key       = "42"    # 256-color index
 //! ```
@@ -35,6 +37,9 @@ pub struct Config {
     pub log_revset: Option<String>,
     #[serde(default)]
     pub keys: KeysConfig,
+    /// Name of a built-in theme preset (see `theme::PRESETS`). `[colors]`
+    /// entries layer on top of it.
+    pub theme: Option<String>,
     #[serde(default)]
     pub colors: HashMap<String, String>,
 }
@@ -103,6 +108,23 @@ pub fn apply_keys(cfg: &Config, keymaps: &mut Keymaps, warnings: &mut Vec<String
     ] {
         apply(bindings, keymaps.local.entry(kind).or_default());
     }
+}
+
+/// The base theme: a built-in preset if `theme = "<name>"` names one, else the
+/// default. An unknown preset name becomes a warning and falls back to default.
+/// `[colors]` overrides are layered on top afterwards via [`apply_colors`].
+pub fn base_theme(cfg: &Config, warnings: &mut Vec<String>) -> crate::theme::Theme {
+    use crate::theme::Theme;
+    let Some(name) = cfg.theme.as_deref() else {
+        return Theme::default();
+    };
+    Theme::preset(name).unwrap_or_else(|| {
+        warnings.push(format!(
+            "theme: unknown preset {name:?} (available: {})",
+            crate::theme::preset_names()
+        ));
+        Theme::default()
+    })
 }
 
 /// Override theme roles from `[colors]`. Bad keys/values become warnings.

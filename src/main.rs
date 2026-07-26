@@ -24,7 +24,7 @@ fn main() -> Result<()> {
     let (cfg, mut warnings) = config::load();
     let mut keymaps = keymap::default_keymaps();
     config::apply_keys(&cfg, &mut keymaps, &mut warnings);
-    let mut theme = rujutsu::theme::Theme::default();
+    let mut theme = config::base_theme(&cfg, &mut warnings);
     config::apply_colors(&cfg, &mut theme, &mut warnings);
     let scrolloff = cfg.scrolloff.unwrap_or(3);
     jj.log_revset = cfg.log_revset.clone();

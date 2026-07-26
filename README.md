@@ -125,6 +125,9 @@ warning rather than aborting.
 # Lines of context to keep around the cursor when scrolling.
 scrolloff = 3
 
+theme = "tokyo-night"  # a built-in preset; the base for the [colors] below.
+                       # A top-level key, so it must come before any [table].
+
 # Revset for the log section of the status buffer and the default log buffer.
 # Omit to use jj's configured default (revsets.log).
 # log_revset = "ancestors(@, 20)"
@@ -139,11 +142,15 @@ scrolloff = 3
 [keys.op-log]
 "r" = "op-restore"
 
-[colors]            # role names: see src/theme.rs
-diff-add  = "green"
+[colors]            # role names: see src/theme/mod.rs
+diff-add  = "green" # layered on top of the chosen preset
 cursor-bg = "#3a3a3a"
 key       = "42"    # 256-color index
 ```
+
+A built-in `theme` preset supplies a full palette as the base; any `[colors]`
+entries then override individual roles on top of it. Bundled presets:
+`tokyo-night`.
 
 Per-buffer keymap tables are `keys.global`, `keys.status`, `keys.log`,
 `keys.revision`, and `keys.op-log`. User bindings are merged on top of the
