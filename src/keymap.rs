@@ -293,8 +293,8 @@ impl Keymaps {
 
 /// The built-in bindings. User config is merged on top of these.
 pub fn default_keymaps() -> Keymaps {
-    use crate::command::Menu;
     use crate::command::NavCmd::*;
+    use crate::command::{FoldCmd, Menu};
     use Command::*;
     let mut global = Keymap::default();
     for (spec, cmd) in [
@@ -314,7 +314,19 @@ pub fn default_keymaps() -> Keymaps {
         ("n", Nav(NextSection)),
         ("p", Nav(PrevSection)),
         ("^", Nav(ParentSection)),
-        ("TAB", ToggleSection),
+        ("TAB", Fold(FoldCmd::Toggle)),
+        ("z a", Fold(FoldCmd::Toggle)),
+        ("z A", Fold(FoldCmd::ToggleRec)),
+        ("z o", Fold(FoldCmd::Open)),
+        ("z O", Fold(FoldCmd::OpenRec)),
+        ("z c", Fold(FoldCmd::Close)),
+        ("z C", Fold(FoldCmd::CloseRec)),
+        ("z r", Fold(FoldCmd::OpenLevel)),
+        ("z R", Fold(FoldCmd::OpenAll)),
+        ("z m", Fold(FoldCmd::CloseLevel)),
+        ("z M", Fold(FoldCmd::CloseAll)),
+        ("z j", Nav(NextSection)),
+        ("z k", Nav(PrevSection)),
         ("RET", Visit),
         ("d", Visit),
         ("/", Search),
@@ -409,6 +421,35 @@ mod tests {
         assert_eq!(
             kms.lookup(PaneKind::Status, &r),
             Lookup::Command(Command::Transient(Menu::Rebase))
+        );
+    }
+
+    #[test]
+    fn vim_fold_keys_resolve() {
+        use crate::command::FoldCmd;
+        let kms = default_keymaps();
+        for (spec, cmd) in [
+            ("z a", Command::Fold(FoldCmd::Toggle)),
+            ("z A", Command::Fold(FoldCmd::ToggleRec)),
+            ("z o", Command::Fold(FoldCmd::Open)),
+            ("z O", Command::Fold(FoldCmd::OpenRec)),
+            ("z c", Command::Fold(FoldCmd::Close)),
+            ("z C", Command::Fold(FoldCmd::CloseRec)),
+            ("z r", Command::Fold(FoldCmd::OpenLevel)),
+            ("z R", Command::Fold(FoldCmd::OpenAll)),
+            ("z m", Command::Fold(FoldCmd::CloseLevel)),
+            ("z M", Command::Fold(FoldCmd::CloseAll)),
+        ] {
+            assert_eq!(
+                kms.lookup(PaneKind::Status, &parse_keys(spec).unwrap()),
+                Lookup::Command(cmd),
+                "binding for {spec:?}"
+            );
+        }
+        // z j / z k mirror the fold-motion keys onto section jumps.
+        assert_eq!(
+            kms.lookup(PaneKind::Status, &parse_keys("z j").unwrap()),
+            Lookup::Command(Command::Nav(crate::command::NavCmd::NextSection))
         );
     }
 

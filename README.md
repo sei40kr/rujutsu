@@ -68,9 +68,14 @@ Defaults (override any of these via config; see below):
 | `C-u` / `PgUp` | Half page up |
 | `Home` | Go to top |
 | `G` / `End` | Go to bottom |
-| `n` / `p` | Next / previous section |
+| `n` / `p` (also `z j` / `z k`) | Next / previous section |
 | `^` | Parent section |
-| `TAB` | Toggle (fold/unfold) section |
+| `TAB` (also `z a`) | Toggle (fold/unfold) section |
+| `z A` | Toggle section recursively |
+| `z o` / `z c` | Open / close section (`z c` again closes the parent) |
+| `z O` / `z C` | Open / close section recursively |
+| `z r` / `z m` | Open / close one fold level |
+| `z R` / `z M` | Open / close all sections |
 | `RET` / `d` | Visit item (open revision / diff) |
 | `/` | Search in buffer |
 

@@ -249,7 +249,7 @@ impl App {
                 self.search_move(-1)
             }
             Command::Nav(nav) => self.pane_mut(|p| p.navigate(nav, height)),
-            Command::ToggleSection => self.pane_mut(|p| p.toggle_at_cursor()),
+            Command::Fold(fold) => self.pane_mut(|p| p.fold(fold)),
             Command::Visit => self.visit_at_point(),
             Command::AbandonOrRestore => self.abandon_or_restore_at_point(),
             Command::Edit => self.edit_at_point(),
