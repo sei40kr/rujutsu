@@ -4,11 +4,44 @@
 //! on where point is.
 
 use crate::jj::types::DiffArea;
+use crate::keymap::PaneKind;
 use crate::ui::section::{Group, SectionValue};
 
 use super::{svec, App, Confirm, PendingAction};
 
 impl App {
+    /// Copy the revision the current buffer is about (magit-copy-buffer-revision,
+    /// `y b`): the revision a revision buffer shows, else the revision at
+    /// point, falling back to `@`.
+    pub(super) fn copy_buffer_revision(&mut self) {
+        let rev = match self.panes.last() {
+            Some(p) if p.kind == PaneKind::Revision => p.title.clone(),
+            _ => self.rev_at_point(),
+        };
+        self.message = Some(format!("copied: {rev}"));
+        self.clipboard_request = Some(rev);
+    }
+
+    /// Copy the value under point to the system clipboard (magit-copy-section-value,
+    /// `y s`): a change id, an operation id, or a file path. The main loop
+    /// performs the copy since it owns the terminal.
+    pub(super) fn copy_at_point(&mut self) {
+        let Some(pane) = self.panes.last() else {
+            return;
+        };
+        let value = match pane.value_at_cursor() {
+            SectionValue::Revision { change_id } => change_id,
+            SectionValue::Operation { op_id } => op_id,
+            SectionValue::File { path, .. } | SectionValue::Hunk { path, .. } => path,
+            _ => {
+                self.message = Some("nothing to copy here".into());
+                return;
+            }
+        };
+        self.message = Some(format!("copied: {value}"));
+        self.clipboard_request = Some(value);
+    }
+
     pub(super) fn visit_at_point(&mut self) {
         let Some(pane) = self.panes.last() else {
             return;

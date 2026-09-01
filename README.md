@@ -19,6 +19,10 @@ transient menus — without leaving the terminal.
 - **Evolog** — inspect a change's evolution.
 - **Live refresh** — the repository is watched and buffers update as the
   working copy changes.
+- **Copy to clipboard** — `y s` copies the value at point (a change id,
+  operation id, or file path) and `y b` the buffer's revision; a real
+  clipboard tool (wl-copy / xclip / xsel / pbcopy) is used when available so
+  failures are reported, else OSC 52 (works over SSH).
 - **Emacs-style key sequences** — multi-key bindings like `P p`, layered as
   transient > buffer-local > global.
 
@@ -64,9 +68,14 @@ Defaults (override any of these via config; see below):
 | `C-u` / `PgUp` | Half page up |
 | `Home` | Go to top |
 | `G` / `End` | Go to bottom |
-| `n` / `p` | Next / previous section |
+| `n` / `p` (also `z j` / `z k`) | Next / previous section |
 | `^` | Parent section |
-| `TAB` | Toggle (fold/unfold) section |
+| `TAB` (also `z a`) | Toggle (fold/unfold) section |
+| `z A` | Toggle section recursively |
+| `z o` / `z c` | Open / close section (`z c` again closes the parent) |
+| `z O` / `z C` | Open / close section recursively |
+| `z r` / `z m` | Open / close one fold level |
+| `z R` / `z M` | Open / close all sections |
 | `RET` / `d` | Visit item (open revision / diff) |
 | `/` | Search in buffer |
 
@@ -78,7 +87,8 @@ Defaults (override any of these via config; see below):
 | `x` | Abandon / restore |
 | `e` | Edit |
 | `a` | Absorb |
-| `y` | Duplicate |
+| `D` | Duplicate |
+| `y s` / `y b` | Copy value at point / buffer revision to clipboard |
 | `S` | Split |
 | `v` | Evolog |
 | `u` | Undo |
@@ -115,6 +125,9 @@ warning rather than aborting.
 # Lines of context to keep around the cursor when scrolling.
 scrolloff = 3
 
+theme = "tokyo-night"  # a built-in preset; the base for the [colors] below.
+                       # A top-level key, so it must come before any [table].
+
 # Revset for the log section of the status buffer and the default log buffer.
 # Omit to use jj's configured default (revsets.log).
 # log_revset = "ancestors(@, 20)"
@@ -129,11 +142,15 @@ scrolloff = 3
 [keys.op-log]
 "r" = "op-restore"
 
-[colors]            # role names: see src/theme.rs
-diff-add  = "green"
+[colors]            # role names: see src/theme/mod.rs
+diff-add  = "green" # layered on top of the chosen preset
 cursor-bg = "#3a3a3a"
 key       = "42"    # 256-color index
 ```
+
+A built-in `theme` preset supplies a full palette as the base; any `[colors]`
+entries then override individual roles on top of it. Bundled presets:
+`tokyo-night`.
 
 Per-buffer keymap tables are `keys.global`, `keys.status`, `keys.log`,
 `keys.revision`, and `keys.op-log`. User bindings are merged on top of the
