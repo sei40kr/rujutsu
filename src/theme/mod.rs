@@ -46,23 +46,28 @@ theme! {
     header_bg:       Color::Blue     => "header-bg",         // log header bar background
     header_fg:       Color::White    => "header-fg",         // log header bar text
     change_id:       Color::Magenta  => "change-id",         // change id prefix
-    commit_id:       Color::Blue     => "commit-id",
+    commit_id:       Color::Blue     => "commit-id",         // commit id prefix
+    id_rest:         Color::Reset    => "id-rest",           // rest of an id after its prefix (dimmed)
     bookmark:        Color::Magenta  => "bookmark",          // bookmark names in log
     tag:             Color::Yellow   => "tag",
     working_copy:    Color::Green    => "working-copy",      // the "@" marker / row
-    graph:           Color::DarkGray => "graph",             // log graph edges
+    graph:           Color::Reset    => "graph",             // log graph edges (dimmed)
     conflict:        Color::Red      => "conflict",
     empty_marker:    Color::Green    => "empty-marker",      // "(empty)" tag
     no_description:  Color::Yellow   => "no-description",    // "(no description set)"
-    immutable:       Color::DarkGray => "immutable",         // ◆ nodes / immutable info
+    immutable:       Color::LightCyan => "immutable",        // ◆ nodes
+    root:            Color::Green    => "root",              // "root()" label
     file_status:     Color::Blue     => "file-status",       // "modified" prefix
     log_author:      Color::Blue     => "log-author",        // log margin author
     log_date:        Color::Gray     => "log-date",          // log margin date
     op_id:           Color::Yellow   => "op-id",             // operation ids
     // Diffs
     hunk_header:     Color::Cyan     => "hunk-header",
+    hunk_header_bg:  Color::Reset    => "hunk-header-bg",
     diff_add:        Color::Green    => "diff-add",
+    diff_add_bg:     Color::Reset    => "diff-add-bg",
     diff_remove:     Color::Red      => "diff-remove",
+    diff_remove_bg:  Color::Reset    => "diff-remove-bg",
     // Chrome
     cursor_bg:       Color::DarkGray => "cursor-bg",
     search_match:    Color::Yellow   => "search-match",   // bg of matched text
@@ -82,6 +87,7 @@ theme! {
     picker_count:    Color::DarkGray => "picker-count",       // "12/45" hint
     menu_title:      Color::Magenta  => "menu-title",
     command:         Color::Cyan     => "command",           // command names in help
+    transient_argument: Color::Green => "transient-argument", // enabled switches / values
     help_border:     Color::Cyan     => "help-border",
 }
 
@@ -151,7 +157,7 @@ mod tests {
     #[test]
     fn preset_resolves_known_and_rejects_unknown() {
         let t = Theme::preset("tokyo-night").expect("tokyo-night preset exists");
-        assert_eq!(t.diff_add, Color::Rgb(0x73, 0xda, 0xca)); // vc-added green
+        assert_eq!(t.diff_add_bg, Color::Rgb(0x23, 0x2e, 0x36));
         assert!(Theme::preset("no-such-theme").is_none());
         assert!(preset_names().contains("tokyo-night"));
     }

@@ -38,10 +38,21 @@ fn parse_rev_line(line: &str) -> Option<RevEntry> {
     let author = f.next().unwrap_or("").to_string();
     let date = f.next().unwrap_or("").to_string();
     let flags = f.next().unwrap_or("");
+    // A missing or bad length colors the whole id as prefix.
+    let change_id_prefix_len = f
+        .next()
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(change_id.len());
+    let commit_id_prefix_len = f
+        .next()
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(commit_id.len());
     Some(RevEntry {
         graph: graph.to_string(),
         change_id,
         commit_id,
+        change_id_prefix_len,
+        commit_id_prefix_len,
         bookmarks,
         tags,
         subject,
@@ -225,7 +236,7 @@ mod tests {
 
     #[test]
     fn log_rows_split_graph_and_fields() {
-        let raw = "@\u{0}sym\u{0}4c39\u{0}\u{0}\u{0}wip\u{0}Ada\u{0}1 hour ago\u{0}@\n\
+        let raw = "@\u{0}sym\u{0}4c39\u{0}\u{0}\u{0}wip\u{0}Ada\u{0}1 hour ago\u{0}@\u{0}1\u{0}2\n\
                    │ ○  \u{0}abc\u{0}1111\u{0}main\u{0}v1\u{0}first\u{0}Ada\u{0}2 days ago\u{0}\n\
                    ├─╯\n\
                    ◆  \u{0}zzz\u{0}0000\u{0}\u{0}\u{0}\u{0}\u{0}56 years ago\u{0}EIR\n";
@@ -236,6 +247,7 @@ mod tests {
         };
         assert_eq!(wc.graph, "@");
         assert_eq!(wc.change_id, "sym");
+        assert_eq!((wc.change_id_prefix_len, wc.commit_id_prefix_len), (1, 2));
         assert!(wc.is_working_copy);
         assert_eq!(wc.subject, "wip");
         let LogRow::Rev(main) = &rows[1] else {
@@ -259,6 +271,8 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].change_id, "abc");
         assert_eq!(entries[0].graph, "");
+        // Without the length fields the whole id counts as prefix.
+        assert_eq!(entries[0].change_id_prefix_len, 3);
     }
 
     #[test]

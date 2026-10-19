@@ -14,9 +14,10 @@ use super::types::{LogRow, OpLogRow, StatusSnapshot};
 
 /// Template for one log/evolog row. Starts each record with NUL so the
 /// parser can split the graph prefix from the fields, and NUL-separates the
-/// fields (descriptions cannot contain NUL). The trailing flag field packs
-/// booleans as single letters. Graph mode adds line breaks itself; the
-/// `--no-graph` variant appends its own.
+/// fields (descriptions cannot contain NUL). The flag field packs booleans as
+/// single letters; the last two fields are the lengths of the ids' unique
+/// prefixes, which jj colors apart from the rest. Graph mode adds line breaks
+/// itself; the `--no-graph` variant appends its own.
 pub const LOG_TEMPLATE: &str = concat!(
     "concat(\"\\0\", change_id.shortest(8), \"\\0\", commit_id.shortest(8), \"\\0\", ",
     "bookmarks.join(\" \"), \"\\0\", tags.join(\" \"), \"\\0\", ",
@@ -24,7 +25,8 @@ pub const LOG_TEMPLATE: &str = concat!(
     "author.name(), \"\\0\", committer.timestamp().ago(), \"\\0\", ",
     "if(current_working_copy, \"@\", \"\"), if(conflict, \"C\", \"\"), ",
     "if(empty, \"E\", \"\"), if(immutable, \"I\", \"\"), if(root, \"R\", \"\"), ",
-    "if(divergent, \"D\", \"\"), if(hidden, \"H\", \"\"))",
+    "if(divergent, \"D\", \"\"), if(hidden, \"H\", \"\"), \"\\0\", ",
+    "change_id.shortest(8).prefix().len(), \"\\0\", commit_id.shortest(8).prefix().len())",
 );
 
 /// `LOG_TEMPLATE` with an explicit newline, for `--no-graph` reads.
@@ -43,7 +45,9 @@ pub const EVOLOG_TEMPLATE: &str = concat!(
     "if(commit.current_working_copy(), \"@\", \"\"), if(commit.conflict(), \"C\", \"\"), ",
     "if(commit.empty(), \"E\", \"\"), if(commit.immutable(), \"I\", \"\"), ",
     "if(commit.root(), \"R\", \"\"), ",
-    "if(commit.divergent(), \"D\", \"\"), if(commit.hidden(), \"H\", \"\"))",
+    "if(commit.divergent(), \"D\", \"\"), if(commit.hidden(), \"H\", \"\"), \"\\0\", ",
+    "commit.change_id().shortest(8).prefix().len(), \"\\0\", ",
+    "commit.commit_id().shortest(8).prefix().len())",
 );
 
 /// Template for one op-log row; same NUL-framing as `LOG_TEMPLATE`.

@@ -558,7 +558,7 @@ impl TransientState {
                     Item::Switch { key, flag, desc } => {
                         let on = self.enabled.contains(flag);
                         let flag_style = if on {
-                            Style::new().fg(t.command).bold()
+                            Style::new().fg(t.transient_argument).bold()
                         } else {
                             Style::new().dim()
                         };
@@ -571,7 +571,10 @@ impl TransientState {
                     }
                     Item::Arg { key, flag, desc } => {
                         let (shown, style) = match self.values.get(flag) {
-                            Some(v) => (format!("{flag} {v}"), Style::new().fg(t.command).bold()),
+                            Some(v) => (
+                                format!("{flag} {v}"),
+                                Style::new().fg(t.transient_argument).bold(),
+                            ),
                             None => (flag.to_string(), Style::new().dim()),
                         };
                         out.push(Line::from(vec![

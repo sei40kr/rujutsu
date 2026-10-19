@@ -104,16 +104,34 @@ fn header_lines(t: &Theme, s: &StatusSnapshot) -> Vec<Line<'static>> {
 /// `<label> <change-id> <commit-id> <bookmarks> <markers> <subject>` — the
 /// status header's revision lines, mirroring `jj status` output.
 fn rev_header_line(t: &Theme, label: &str, rev: &RevEntry) -> Line<'static> {
-    let mut spans = vec![
-        Span::styled(format!("{label} "), Style::new().dim()),
-        Span::styled(rev.change_id.clone(), Style::new().fg(t.change_id).bold()),
-        Span::raw(" "),
-        Span::styled(rev.commit_id.clone(), Style::new().fg(t.commit_id)),
-        Span::raw(" "),
-    ];
+    let mut spans = vec![Span::styled(format!("{label} "), Style::new().dim())];
+    spans.extend(id_spans(
+        t,
+        &rev.change_id,
+        rev.change_id_prefix_len,
+        Style::new().fg(t.change_id).bold(),
+    ));
+    spans.push(Span::raw(" "));
+    spans.extend(id_spans(
+        t,
+        &rev.commit_id,
+        rev.commit_id_prefix_len,
+        Style::new().fg(t.commit_id),
+    ));
+    spans.push(Span::raw(" "));
     spans.extend(decoration_spans(t, rev));
     spans.push(subject_span(t, rev));
     Line::from(spans)
+}
+
+/// An id as jj shows it: the unique prefix in `prefix_style`, the rest in the
+/// `id_rest` role, dimmed.
+fn id_spans(t: &Theme, id: &str, prefix_len: usize, prefix_style: Style) -> [Span<'static>; 2] {
+    let (prefix, rest) = id.split_at(prefix_len.min(id.len()));
+    [
+        Span::styled(prefix.to_string(), prefix_style),
+        Span::styled(rest.to_string(), Style::new().fg(t.id_rest).dim()),
+    ]
 }
 
 /// Bookmark/tag/state decorations shared by header and log rows.
@@ -160,7 +178,7 @@ fn decoration_spans(t: &Theme, rev: &RevEntry) -> Vec<Span<'static>> {
 
 fn subject_span(t: &Theme, rev: &RevEntry) -> Span<'static> {
     if rev.is_root {
-        Span::styled("root()".to_string(), Style::new().fg(t.immutable))
+        Span::styled("root()".to_string(), Style::new().fg(t.root))
     } else if rev.subject.is_empty() {
         Span::styled(
             "(no description set)".to_string(),
@@ -200,7 +218,7 @@ pub fn push_log_rows(t: &Theme, parent: &mut Section, rows: &[LogRow]) {
                 parent.children.push(sec);
             }
             LogRow::Graph(g) => {
-                let line = Line::from(Span::styled(g.clone(), Style::new().fg(t.graph)));
+                let line = Line::from(Span::styled(g.clone(), Style::new().fg(t.graph).dim()));
                 match parent.children.last_mut() {
                     Some(last) => last.push_body(line),
                     None => parent.push_body(line),
@@ -217,18 +235,16 @@ fn rev_log_line(t: &Theme, e: &RevEntry) -> Line<'static> {
     } else if e.is_immutable {
         Style::new().fg(t.immutable)
     } else {
-        Style::new().fg(t.graph)
+        Style::new().fg(t.graph).dim()
     };
-    let id_style = if e.is_immutable {
-        Style::new().fg(t.immutable).bold()
-    } else {
-        Style::new().fg(t.change_id).bold()
-    };
-    let mut spans = vec![
-        Span::styled(e.graph.clone(), graph_style),
-        Span::styled(e.change_id.clone(), id_style),
-        Span::raw(" "),
-    ];
+    let mut spans = vec![Span::styled(e.graph.clone(), graph_style)];
+    spans.extend(id_spans(
+        t,
+        &e.change_id,
+        e.change_id_prefix_len,
+        Style::new().fg(t.change_id).bold(),
+    ));
+    spans.push(Span::raw(" "));
     spans.extend(decoration_spans(t, e));
     let mut subject = subject_span(t, e);
     if e.is_working_copy {
@@ -328,7 +344,7 @@ pub fn file_section(t: &Theme, parent_id: u64, area: DiffArea, fd: &FileDiff) ->
             },
             Line::from(Span::styled(
                 hunk.header.clone(),
-                Style::new().fg(t.hunk_header),
+                Style::new().fg(t.hunk_header).bg(t.hunk_header_bg),
             )),
         );
         for l in &hunk.lines {
@@ -341,8 +357,8 @@ pub fn file_section(t: &Theme, parent_id: u64, area: DiffArea, fd: &FileDiff) ->
 
 fn diff_line(t: &Theme, l: &str) -> Line<'static> {
     let style = match l.as_bytes().first() {
-        Some(b'+') => Style::new().fg(t.diff_add),
-        Some(b'-') => Style::new().fg(t.diff_remove),
+        Some(b'+') => Style::new().fg(t.diff_add).bg(t.diff_add_bg),
+        Some(b'-') => Style::new().fg(t.diff_remove).bg(t.diff_remove_bg),
         Some(b'\\') => Style::new().dim(),
         _ => Style::new(),
     };
@@ -401,7 +417,7 @@ pub fn build_op_log(t: &Theme, rows: &[OpLogRow]) -> Section {
                 let graph_style = if op.is_current {
                     Style::new().fg(t.working_copy).bold()
                 } else {
-                    Style::new().fg(t.graph)
+                    Style::new().fg(t.graph).dim()
                 };
                 let mut sec = Section::new(
                     0,
@@ -423,7 +439,7 @@ pub fn build_op_log(t: &Theme, rows: &[OpLogRow]) -> Section {
                 root.children.push(sec);
             }
             OpLogRow::Graph(g) => {
-                let line = Line::from(Span::styled(g.clone(), Style::new().fg(t.graph)));
+                let line = Line::from(Span::styled(g.clone(), Style::new().fg(t.graph).dim()));
                 match root.children.last_mut() {
                     Some(last) => last.push_body(line),
                     None => root.push_body(line),
@@ -502,11 +518,24 @@ mod tests {
             graph: "○  ".into(),
             change_id: change_id.into(),
             commit_id: "abcd1234".into(),
+            change_id_prefix_len: 1,
+            commit_id_prefix_len: 2,
             subject: subject.into(),
             author: "Ada".into(),
             date: "2 days ago".into(),
             ..RevEntry::default()
         }
+    }
+
+    #[test]
+    fn ids_split_into_prefix_and_rest() {
+        let t = Theme::default();
+        let line = rev_header_line(&t, "@", &rev("abc", "s"));
+        let text: Vec<&str> = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text[1..6], ["a", "bc", " ", "ab", "cd1234"]);
+        assert_eq!(line.spans[1].style.fg, Some(t.change_id));
+        assert_eq!(line.spans[2].style, Style::new().fg(t.id_rest).dim());
+        assert_eq!(line.spans[4].style.fg, Some(t.commit_id));
     }
 
     #[test]

@@ -80,7 +80,12 @@ fn draw_pane(f: &mut Frame, app: &mut App, area: Rect) {
                 Some(m) => with_margin(&sanitized, &sanitize_line(m), area.width),
                 None => sanitized,
             };
-            if let Some(bg) = fl.fill_bg {
+            // A line ending in a background extends it to the edge, like
+            // Emacs's `:extend t`.
+            let fill = fl
+                .fill_bg
+                .or_else(|| content.spans.last().and_then(|s| s.style.bg));
+            if let Some(bg) = fill {
                 content = fill_background(content, bg, area.width);
             }
             let mut line = if top + i == cursor {

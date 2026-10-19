@@ -57,6 +57,9 @@ pub struct RevEntry {
     /// Shortest-unique change id prefix (8 chars).
     pub change_id: String,
     pub commit_id: String,
+    /// Length of the unique prefix of `change_id` / `commit_id`.
+    pub change_id_prefix_len: usize,
+    pub commit_id_prefix_len: usize,
     /// Space-separated bookmark names ("main main@origin"), possibly empty.
     pub bookmarks: String,
     pub tags: String,
