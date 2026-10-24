@@ -10,7 +10,7 @@ fn fetch(op: Fetch) {
         .remote(&remote)
         .describe("a")
         .bookmark("main")
-        .jj(&["git", "push", "--bookmark", "main", "--allow-new"]);
+        .jj(&["git", "push", "--bookmark", "main"]);
     let repo = Repo::init().remote(&remote);
     assert!(repo.bookmarks().is_empty());
 

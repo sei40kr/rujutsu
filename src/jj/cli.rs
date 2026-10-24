@@ -10,8 +10,8 @@ use std::sync::Arc;
 
 use super::op::{
     Author, BookmarkOp, Checkout, Commit, Deletions, Describe, EmptiedCommits, EmptiedSource,
-    Fetch, LogQuery, LogScope, Message, NewBookmarks, NewChange, OperationId, Placement, Push,
-    PushScope, Rebase, RebaseKind, Restore, Revset, RunMode, Squash, SquashMessage, SquashSource,
+    Fetch, LogQuery, LogScope, Message, NewChange, OperationId, Placement, Push, PushScope, Rebase,
+    RebaseKind, Restore, Revset, RunMode, Squash, SquashMessage, SquashSource,
 };
 use super::types::{LogRow, OpLogRow, RevisionView, StatusSnapshot};
 use super::{parse, Jj, JjError, Outcome};
@@ -139,6 +139,29 @@ impl JjCli {
         })
     }
 
+    /// jj moved author resets out of describe/commit into `metaedit`, so a
+    /// reset runs first as its own step; `then` runs only if it succeeded.
+    fn then_reset_author(
+        &self,
+        author: Author,
+        rev: &Revset,
+        then: impl FnOnce() -> Result<Outcome, JjError>,
+    ) -> Result<Outcome, JjError> {
+        if author == Author::Keep {
+            return then();
+        }
+        let reset = self.run(&["metaedit", "--update-author", "-r", rev.as_str()])?;
+        if !reset.ok() {
+            return Ok(reset);
+        }
+        let main = then()?;
+        Ok(Outcome {
+            cmd: format!("{}; {}", reset.cmd, main.cmd),
+            status: main.status,
+            output: format!("{}{}", reset.output, main.output),
+        })
+    }
+
     /// Run a read with `--ignore-working-copy` (no snapshot, no op).
     fn run_read(&self, args: &[&str]) -> Result<Captured, JjError> {
         run_in(&self.workspace_root, args, true)
@@ -165,19 +188,13 @@ fn describe_args<'a>(op: &'a Describe, msg: Option<&'a Message>) -> Vec<&'a str>
     if let Some(m) = msg {
         a.extend(["-m", m.as_str()]);
     }
-    if op.author == Author::ResetToCurrentUser {
-        a.push("--reset-author");
-    }
     a
 }
 
-fn commit_args<'a>(op: &'a Commit, msg: Option<&'a Message>) -> Vec<&'a str> {
+fn commit_args(msg: Option<&Message>) -> Vec<&str> {
     let mut a = vec!["commit"];
     if let Some(m) = msg {
         a.extend(["-m", m.as_str()]);
-    }
-    if op.author == Author::ResetToCurrentUser {
-        a.push("--reset-author");
     }
     a
 }
@@ -307,11 +324,14 @@ impl Jj for JjCli {
     }
 
     fn describe(&self, op: &Describe, msg: &Message) -> Result<Outcome, JjError> {
-        self.run(&describe_args(op, Some(msg)))
+        self.then_reset_author(op.author, &op.rev, || {
+            self.run(&describe_args(op, Some(msg)))
+        })
     }
 
     fn commit(&self, op: &Commit, msg: &Message) -> Result<Outcome, JjError> {
-        self.run(&commit_args(op, Some(msg)))
+        let wc = Revset::working_copy();
+        self.then_reset_author(op.author, &wc, || self.run(&commit_args(Some(msg))))
     }
 
     fn new_change(&self, op: &NewChange) -> Result<Outcome, JjError> {
@@ -374,12 +394,9 @@ impl Jj for JjCli {
     fn push(&self, op: &Push) -> Result<Outcome, JjError> {
         let mut a = vec!["git", "push"];
         match &op.scope {
-            PushScope::Tracked => {}
+            PushScope::Tracked => a.push("--tracked"),
             PushScope::Bookmark(b) => a.extend(["--bookmark", b.as_str()]),
             PushScope::Change(r) => a.extend(["--change", r.as_str()]),
-        }
-        if op.options.new_bookmarks == NewBookmarks::Allow {
-            a.push("--allow-new");
         }
         if op.options.deletions == Deletions::Propagate {
             a.push("--deleted");
@@ -433,11 +450,12 @@ impl Jj for JjCli {
     }
 
     fn describe_in_editor(&self, op: &Describe) -> Result<Outcome, JjError> {
-        self.run_fg(&describe_args(op, None))
+        self.then_reset_author(op.author, &op.rev, || self.run_fg(&describe_args(op, None)))
     }
 
     fn commit_in_editor(&self, op: &Commit) -> Result<Outcome, JjError> {
-        self.run_fg(&commit_args(op, None))
+        let wc = Revset::working_copy();
+        self.then_reset_author(op.author, &wc, || self.run_fg(&commit_args(None)))
     }
 
     fn squash_in_editor(&self, op: &Squash) -> Result<Outcome, JjError> {

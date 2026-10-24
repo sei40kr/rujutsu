@@ -355,13 +355,6 @@ pub enum PushScope {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum NewBookmarks {
-    #[default]
-    Reject,
-    Allow,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Deletions {
     #[default]
     Skip,
@@ -377,7 +370,6 @@ pub enum RunMode {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PushOptions {
-    pub new_bookmarks: NewBookmarks,
     pub deletions: Deletions,
     pub mode: RunMode,
 }

@@ -13,8 +13,8 @@ use ratatui::text::{Line, Span};
 
 use crate::command::Menu;
 use crate::jj::op::{
-    Author, Checkout, Deletions, EmptiedCommits, EmptiedSource, Fetch, NewBookmarks, Placement,
-    PushOptions, RebaseKind, RunMode, SquashDescription, SquashOptions,
+    Author, Checkout, Deletions, EmptiedCommits, EmptiedSource, Fetch, Placement, PushOptions,
+    RebaseKind, RunMode, SquashDescription, SquashOptions,
 };
 use crate::keymap::KeyPress;
 use crate::theme::Theme;
@@ -325,18 +325,6 @@ pub static PUSH: MenuDef<PushOptions> = MenuDef {
         Group {
             title: "Arguments",
             items: &[
-                Item::Switch {
-                    key: "-N",
-                    label: "--allow-new",
-                    desc: "Allow pushing new bookmarks",
-                    toggle: |o| {
-                        o.new_bookmarks = match o.new_bookmarks {
-                            NewBookmarks::Reject => NewBookmarks::Allow,
-                            NewBookmarks::Allow => NewBookmarks::Reject,
-                        }
-                    },
-                    is_on: |o| o.new_bookmarks == NewBookmarks::Allow,
-                },
                 Item::Switch {
                     key: "-d",
                     label: "--deleted",

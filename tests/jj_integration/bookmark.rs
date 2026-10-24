@@ -70,7 +70,7 @@ fn untrack_and_track_toggle_a_remote_bookmark() {
         .remote(&remote)
         .describe("a")
         .bookmark("main")
-        .jj(&["git", "push", "--bookmark", "main", "--allow-new"]);
+        .jj(&["git", "push", "--bookmark", "main"]);
     assert_eq!(repo.bookmarks(), ["main", "main@origin*"]);
     let b = RemoteBookmark::parse("main@origin").unwrap();
 

@@ -24,13 +24,10 @@ fn describe_sets_the_subject() {
 
 #[test]
 fn reset_author_replaces_a_foreign_author() {
-    let repo = Repo::init().jj(&[
-        "describe",
-        "--author",
-        "Someone Else <else@example.com>",
-        "-m",
-        "x",
-    ]);
+    let repo =
+        Repo::init()
+            .describe("x")
+            .jj(&["metaedit", "--author", "Someone Else <else@example.com>"]);
     assert_eq!(repo.show("@", "author.name()"), "Someone Else");
 
     let out = repo

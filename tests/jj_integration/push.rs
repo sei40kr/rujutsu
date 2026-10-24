@@ -1,6 +1,4 @@
-use rujutsu::jj::op::{
-    BookmarkName, Deletions, NewBookmarks, Push, PushOptions, PushScope, RunMode,
-};
+use rujutsu::jj::op::{BookmarkName, Deletions, Push, PushOptions, PushScope, RunMode};
 use rujutsu::jj::Jj;
 
 use crate::common::{rev, Repo};
@@ -30,20 +28,15 @@ fn push(repo: &Repo, scope: PushScope, options: PushOptions) -> rujutsu::jj::Out
     repo.cli().push(&Push { scope, options }).unwrap()
 }
 
-/// Whether jj refuses a new bookmark without allowance changed between
-/// releases, so only the allowed push is asserted.
 #[test]
-fn allowed_new_bookmark_lands_on_the_remote() {
+fn new_bookmark_lands_on_the_remote() {
     let remote = Repo::init();
     let repo = with_remote(&remote);
 
     let out = push(
         &repo,
         PushScope::Bookmark(BookmarkName::parse("main").unwrap()),
-        PushOptions {
-            new_bookmarks: NewBookmarks::Allow,
-            ..PushOptions::default()
-        },
+        PushOptions::default(),
     );
     assert!(out.ok(), "{}", out.output);
     assert_eq!(remote_bookmarks(&remote), ["main"]);
@@ -53,7 +46,7 @@ fn allowed_new_bookmark_lands_on_the_remote() {
 fn tracked_pushes_what_the_remote_already_follows() {
     let remote = Repo::init();
     let repo = with_remote(&remote)
-        .jj(&["git", "push", "--bookmark", "main", "--allow-new"])
+        .jj(&["git", "push", "--bookmark", "main"])
         // The pushed change became immutable, so this edits a fresh @.
         .file("a.txt", "hello\nmore\n")
         .describe("more")
@@ -90,7 +83,6 @@ fn dry_run_touches_nothing() {
         &repo,
         PushScope::Bookmark(BookmarkName::parse("main").unwrap()),
         PushOptions {
-            new_bookmarks: NewBookmarks::Allow,
             mode: RunMode::DryRun,
             ..PushOptions::default()
         },
@@ -104,7 +96,7 @@ fn dry_run_touches_nothing() {
 fn propagating_deletions_removes_the_remote_bookmark() {
     let remote = Repo::init();
     let repo = with_remote(&remote)
-        .jj(&["git", "push", "--bookmark", "main", "--allow-new"])
+        .jj(&["git", "push", "--bookmark", "main"])
         .jj(&["bookmark", "delete", "main"]);
 
     let out = push(
