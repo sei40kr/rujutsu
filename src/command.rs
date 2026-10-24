@@ -92,6 +92,7 @@ pub enum Menu {
     Push,
     Fetch,
     Log,
+    Restore,
 }
 
 pub struct CommandInfo {
@@ -273,6 +274,11 @@ pub const COMMANDS: &[CommandInfo] = &[
         "Open the fetch menu",
     ),
     ci(Command::Transient(Menu::Log), "log", "Open the log menu"),
+    ci(
+        Command::Transient(Menu::Restore),
+        "restore",
+        "Open the restore menu",
+    ),
     ci(
         Command::OpRestore,
         "op-restore",

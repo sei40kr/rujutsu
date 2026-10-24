@@ -371,6 +371,46 @@ mod tests {
     }
 
     #[test]
+    fn interactive_restore_changes_in_hands_over_the_terminal() {
+        use crate::jj::op::{DiffTool, Restore, RestoreSource, RestoreSpec};
+        use crate::ui::transient::RestoreChoices;
+        let (mut app, fake, _rx) = app();
+        let tool = DiffTool::parse("meld").unwrap();
+        let choices = RestoreChoices {
+            tool: Some(tool.clone()),
+            ..RestoreChoices::default()
+        };
+        app.invoke_transient(TransientAction::RestoreChangesIn(choices));
+        let req = app.take_editor_request().expect("editor handoff");
+        (req.run)(&*fake).unwrap();
+        assert_eq!(
+            fake.calls(),
+            vec![Call::RestoreInEditor(
+                Restore::Spec(RestoreSpec {
+                    source: RestoreSource::ChangesIn(Revset::working_copy()),
+                    fileset: None,
+                    descendants: Default::default(),
+                }),
+                Some(tool),
+            )]
+        );
+    }
+
+    #[test]
+    fn restore_changes_in_refuses_from_into() {
+        use crate::ui::transient::RestoreChoices;
+        let (mut app, fake, _rx) = app();
+        let choices = RestoreChoices {
+            from: Some(Revset::parse("main").unwrap()),
+            ..RestoreChoices::default()
+        };
+        app.invoke_transient(TransientAction::RestoreChangesIn(choices));
+        assert!(app.take_editor_request().is_none());
+        assert!(fake.calls().is_empty());
+        assert!(app.message.is_some());
+    }
+
+    #[test]
     fn squash_goes_through_the_editor_with_its_options() {
         let (mut app, fake, _rx) = app();
         let options = SquashOptions {

@@ -13,8 +13,9 @@ use ratatui::text::{Line, Span};
 
 use crate::command::Menu;
 use crate::jj::op::{
-    Author, Checkout, Deletions, EmptiedCommits, EmptiedSource, Fetch, Placement, PushOptions,
-    RebaseKind, RunMode, SquashDescription, SquashOptions,
+    Author, Checkout, Deletions, DiffTool, EmptiedCommits, EmptiedSource, Fetch, Fileset, Invalid,
+    Placement, PushOptions, RebaseKind, RestoreDescendants, Revset, RunMode, SquashDescription,
+    SquashOptions,
 };
 use crate::keymap::KeyPress;
 use crate::theme::Theme;
@@ -48,6 +49,9 @@ pub enum TransientAction {
     LogDefault(Option<NonZeroUsize>),
     LogAll(Option<NonZeroUsize>),
     LogRevset(Option<NonZeroUsize>),
+    Restore(RestoreChoices),
+    /// Undo the changes in the revision at point.
+    RestoreChangesIn(RestoreChoices),
 }
 
 pub enum Item<S: 'static> {
@@ -445,6 +449,112 @@ pub static LOG: MenuDef<LogChoices> = MenuDef {
     ],
 };
 
+/// Parse an `Arg` value into an optional choice; empty clears it.
+fn optional<T>(text: &str, parse: fn(&str) -> Result<T, Invalid>) -> Result<Option<T>, String> {
+    if text.is_empty() {
+        return Ok(None);
+    }
+    parse(text).map(Some).map_err(|e| e.to_string())
+}
+
+/// The restore menu's choices. `--changes-in` is an action, not an
+/// argument, since it takes the revision at point.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RestoreChoices {
+    pub from: Option<Revset>,
+    pub into: Option<Revset>,
+    pub fileset: Option<Fileset>,
+    pub descendants: RestoreDescendants,
+    pub interactive: bool,
+    /// Implies interactive.
+    pub tool: Option<DiffTool>,
+}
+
+pub static RESTORE: MenuDef<RestoreChoices> = MenuDef {
+    title: "Restore",
+    groups: &[
+        Group {
+            title: "Arguments",
+            items: &[
+                Item::Arg {
+                    key: "-f",
+                    label: "--from",
+                    desc: "Revision to restore from",
+                    set: |c, t| {
+                        c.from = optional(t, Revset::parse)?;
+                        Ok(())
+                    },
+                    shown: |c| c.from.as_ref().map(ToString::to_string),
+                },
+                Item::Arg {
+                    key: "-t",
+                    label: "--into",
+                    desc: "Revision to restore into",
+                    set: |c, t| {
+                        c.into = optional(t, Revset::parse)?;
+                        Ok(())
+                    },
+                    shown: |c| c.into.as_ref().map(ToString::to_string),
+                },
+                Item::Switch {
+                    key: "-d",
+                    label: "--restore-descendants",
+                    desc: "Keep descendants' content, not their diffs",
+                    toggle: |c| {
+                        c.descendants = match c.descendants {
+                            RestoreDescendants::KeepDiffs => RestoreDescendants::KeepContents,
+                            RestoreDescendants::KeepContents => RestoreDescendants::KeepDiffs,
+                        }
+                    },
+                    is_on: |c| c.descendants == RestoreDescendants::KeepContents,
+                },
+                Item::Switch {
+                    key: "-i",
+                    label: "--interactive",
+                    desc: "Choose the changes in the diff editor",
+                    toggle: |c| c.interactive = !c.interactive,
+                    is_on: |c| c.interactive,
+                },
+                Item::Arg {
+                    key: "=t",
+                    label: "--tool",
+                    desc: "Diff editor to use (implies --interactive)",
+                    set: |c, t| {
+                        c.tool = optional(t, DiffTool::parse)?;
+                        Ok(())
+                    },
+                    shown: |c| c.tool.as_ref().map(ToString::to_string),
+                },
+                Item::Arg {
+                    key: "--",
+                    label: "--",
+                    desc: "Restore only these paths (fileset)",
+                    set: |c, t| {
+                        c.fileset = optional(t, Fileset::parse)?;
+                        Ok(())
+                    },
+                    shown: |c| c.fileset.as_ref().map(ToString::to_string),
+                },
+            ],
+        },
+        Group {
+            title: "Actions",
+            items: &[
+                Item::Action {
+                    key: "r",
+                    desc: "Restore (default: @ from its parent)",
+                    build: |c| TransientAction::Restore(c.clone()),
+                },
+                Item::Action {
+                    key: "c",
+                    desc: "Undo the changes in the revision at point",
+                    build: |c| TransientAction::RestoreChangesIn(c.clone()),
+                },
+            ],
+        },
+    ],
+};
+
 /// Open a `Command::Transient(menu)`. A new menu adds one arm here and
 /// nothing in `App::dispatch`.
 pub fn open(menu: Menu) -> Box<dyn OpenMenu> {
@@ -458,6 +568,7 @@ pub fn open(menu: Menu) -> Box<dyn OpenMenu> {
         Menu::Push => Box::new(TransientState::new(&PUSH)),
         Menu::Fetch => Box::new(TransientState::new(&FETCH)),
         Menu::Log => Box::new(TransientState::new(&LOG)),
+        Menu::Restore => Box::new(TransientState::new(&RESTORE)),
     }
 }
 

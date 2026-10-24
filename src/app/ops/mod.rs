@@ -12,6 +12,7 @@ mod bookmark;
 mod log;
 mod rebase;
 mod remote;
+mod restore;
 mod revise;
 
 use crate::command::Menu;
@@ -36,6 +37,7 @@ impl App {
             | BookmarkUntrack | BookmarkForget => self.bookmark_action(action),
             Push(..) | PushBookmark(..) | PushChange(..) | Fetch(..) => self.remote_action(action),
             LogDefault(..) | LogAll(..) | LogRevset(..) => self.log_action(action),
+            Restore(..) | RestoreChangesIn(..) => self.restore_action(action),
         }
     }
 }

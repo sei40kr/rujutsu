@@ -9,9 +9,10 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 
 use super::op::{
-    Author, BookmarkOp, Checkout, Commit, Deletions, Describe, EmptiedCommits, EmptiedSource,
-    Fetch, LogQuery, LogScope, Message, NewChange, OperationId, Placement, Push, PushScope, Rebase,
-    RebaseKind, Restore, Revset, RunMode, Squash, SquashMessage, SquashSource,
+    Author, BookmarkOp, Checkout, Commit, Deletions, Describe, DiffTool, EmptiedCommits,
+    EmptiedSource, Fetch, LogQuery, LogScope, Message, NewChange, OperationId, Placement, Push,
+    PushScope, Rebase, RebaseKind, Restore, RestoreDescendants, RestoreSource, Revset, RunMode,
+    Squash, SquashMessage, SquashSource,
 };
 use super::types::{LogRow, OpLogRow, RevisionView, StatusSnapshot};
 use super::{parse, Jj, JjError, Outcome};
@@ -218,6 +219,36 @@ fn squash_args<'a>(op: &'a Squash, msg: Option<&'a SquashMessage>) -> Vec<&'a st
     a
 }
 
+/// `extra` goes before the positional paths, which must come last.
+fn restore_args<'a>(op: &'a Restore, extra: &[&'a str]) -> Vec<&'a str> {
+    let mut a = vec!["restore"];
+    a.extend(extra);
+    match op {
+        Restore::Path(p) => a.extend(["--", p.as_str()]),
+        Restore::WorkingCopy => {}
+        Restore::Spec(s) => {
+            match &s.source {
+                RestoreSource::Between { from, into } => {
+                    if let Some(r) = from {
+                        a.extend(["--from", r.as_str()]);
+                    }
+                    if let Some(r) = into {
+                        a.extend(["--into", r.as_str()]);
+                    }
+                }
+                RestoreSource::ChangesIn(r) => a.extend(["--changes-in", r.as_str()]),
+            }
+            if s.descendants == RestoreDescendants::KeepContents {
+                a.push("--restore-descendants");
+            }
+            if let Some(f) = &s.fileset {
+                a.extend(["--", f.as_str()]);
+            }
+        }
+    }
+    a
+}
+
 impl Jj for JjCli {
     fn workspace_root(&self) -> &Path {
         &self.workspace_root
@@ -419,10 +450,7 @@ impl Jj for JjCli {
     }
 
     fn restore(&self, op: &Restore) -> Result<Outcome, JjError> {
-        match op {
-            Restore::Path(p) => self.run(&["restore", "--", p.as_str()]),
-            Restore::WorkingCopy => self.run(&["restore"]),
-        }
+        self.run(&restore_args(op, &[]))
     }
 
     fn edit(&self, rev: &Revset) -> Result<Outcome, JjError> {
@@ -464,6 +492,13 @@ impl Jj for JjCli {
 
     fn split_in_editor(&self, rev: &Revset) -> Result<Outcome, JjError> {
         self.run_fg(&["split", "-r", rev.as_str()])
+    }
+
+    fn restore_in_editor(&self, op: &Restore, tool: Option<&DiffTool>) -> Result<Outcome, JjError> {
+        match tool {
+            Some(t) => self.run_fg(&restore_args(op, &["--tool", t.as_str()])),
+            None => self.run_fg(&restore_args(op, &["--interactive"])),
+        }
     }
 }
 

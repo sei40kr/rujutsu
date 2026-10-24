@@ -188,6 +188,28 @@ impl RepoPath {
     }
 }
 
+/// A fileset expression: a path, `glob:"*.rs"`, `~file:x`, ...
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Fileset(String);
+display_inner!(Fileset);
+
+impl Fileset {
+    pub fn parse(s: &str) -> Result<Self, Invalid> {
+        non_blank("fileset", s).map(Self)
+    }
+}
+
+/// A diff editor named in jj's `merge-tools` config.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct DiffTool(String);
+display_inner!(DiffTool);
+
+impl DiffTool {
+    pub fn parse(s: &str) -> Result<Self, Invalid> {
+        one_word("tool name", s).map(Self)
+    }
+}
+
 /// An operation id from the op log.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct OperationId(String);
@@ -392,6 +414,37 @@ pub enum Restore {
     Path(RepoPath),
     /// Discard every working-copy change.
     WorkingCopy,
+    /// Restore paths between revisions, or undo one revision's changes.
+    Spec(RestoreSpec),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RestoreSource {
+    /// Make `into` match `from`. `None` means `@-` for `from`, `@` for `into`.
+    Between {
+        from: Option<Revset>,
+        into: Option<Revset>,
+    },
+    /// Undo the changes this revision made relative to its parents.
+    ChangesIn(Revset),
+}
+
+/// How descendants of the restored revision are rewritten.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum RestoreDescendants {
+    /// Rebase them, keeping their diffs.
+    #[default]
+    KeepDiffs,
+    /// Keep their contents, so their diffs absorb the restore.
+    KeepContents,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestoreSpec {
+    pub source: RestoreSource,
+    /// `None` restores every path.
+    pub fileset: Option<Fileset>,
+    pub descendants: RestoreDescendants,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

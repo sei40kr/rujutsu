@@ -349,6 +349,7 @@ pub fn default_keymaps() -> Keymaps {
         ("P", Transient(Menu::Push)),
         ("f", Transient(Menu::Fetch)),
         ("l", Transient(Menu::Log)),
+        ("R", Transient(Menu::Restore)),
         ("?", Help),
         ("O", OpLog),
         ("$", ProcessLog),

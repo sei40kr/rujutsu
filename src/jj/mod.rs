@@ -14,8 +14,8 @@ pub mod fake;
 use std::path::Path;
 
 use op::{
-    BookmarkOp, Commit, Describe, Fetch, LogQuery, Message, NewChange, OperationId, Push, Rebase,
-    Restore, Revset, Squash, SquashMessage,
+    BookmarkOp, Commit, Describe, DiffTool, Fetch, LogQuery, Message, NewChange, OperationId, Push,
+    Rebase, Restore, Revset, Squash, SquashMessage,
 };
 use types::{LogRow, OpLogRow, RevisionView, StatusSnapshot};
 
@@ -85,4 +85,6 @@ pub trait Jj: Send + Sync {
     fn commit_in_editor(&self, op: &Commit) -> Result<Outcome, JjError>;
     fn squash_in_editor(&self, op: &Squash) -> Result<Outcome, JjError>;
     fn split_in_editor(&self, rev: &Revset) -> Result<Outcome, JjError>;
+    /// `restore` choosing hunks in a diff editor (`tool`, or jj's default).
+    fn restore_in_editor(&self, op: &Restore, tool: Option<&DiffTool>) -> Result<Outcome, JjError>;
 }

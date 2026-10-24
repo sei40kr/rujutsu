@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use super::op::{
-    BookmarkOp, Commit, Describe, Fetch, LogQuery, Message, NewChange, OperationId, Push, Rebase,
-    Restore, Revset, Squash, SquashMessage,
+    BookmarkOp, Commit, Describe, DiffTool, Fetch, LogQuery, Message, NewChange, OperationId, Push,
+    Rebase, Restore, Revset, Squash, SquashMessage,
 };
 use super::types::{LogRow, OpLogRow, RevisionView, StatusSnapshot};
 use super::{Jj, JjError, Outcome};
@@ -31,6 +31,7 @@ pub enum Call {
     Redo,
     OpRestore(OperationId),
     Split(Revset),
+    RestoreInEditor(Restore, Option<DiffTool>),
 }
 
 #[derive(Default)]
@@ -137,5 +138,8 @@ impl Jj for FakeJj {
     }
     fn split_in_editor(&self, rev: &Revset) -> Result<Outcome, JjError> {
         self.record(Call::Split(rev.clone()))
+    }
+    fn restore_in_editor(&self, op: &Restore, tool: Option<&DiffTool>) -> Result<Outcome, JjError> {
+        self.record(Call::RestoreInEditor(op.clone(), tool.cloned()))
     }
 }

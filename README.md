@@ -111,6 +111,7 @@ Defaults (override any of these via config; see below):
 | `P` | Push |
 | `f` | Fetch |
 | `l` | Log |
+| `R` | Restore |
 
 In the operation-log buffer, `r` restores to the selected operation instead of
 opening the rebase menu.
