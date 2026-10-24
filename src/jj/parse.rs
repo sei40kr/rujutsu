@@ -6,6 +6,7 @@
 //! text before the first NUL is the graph prefix — and a line without NUL is
 //! a pure graph line ("│", "├─╯", "~").
 
+use super::op::{BookmarkRef, ChangeId, CommitId, OperationId, RepoPath};
 use super::types::{FileDiff, Hunk, LogRow, OpEntry, OpLogRow, RevEntry};
 
 /// Parse the output of `jj log`/`jj evolog` run with `LOG_TEMPLATE`.
@@ -27,12 +28,14 @@ pub fn parse_rev_entries(text: &str) -> Vec<RevEntry> {
 fn parse_rev_line(line: &str) -> Option<RevEntry> {
     let (graph, rest) = line.split_once('\0')?;
     let mut f = rest.split('\0');
-    let change_id = f.next()?.to_string();
-    if change_id.is_empty() {
-        return None;
-    }
-    let commit_id = f.next().unwrap_or("").to_string();
-    let bookmarks = f.next().unwrap_or("").to_string();
+    let change_id = ChangeId::parse(f.next()?).ok()?;
+    let commit_id = CommitId::parse(f.next()?).ok()?;
+    let bookmarks = f
+        .next()
+        .unwrap_or("")
+        .split_whitespace()
+        .filter_map(|b| BookmarkRef::parse(b).ok())
+        .collect();
     let tags = f.next().unwrap_or("").to_string();
     let subject = f.next().unwrap_or("").to_string();
     let author = f.next().unwrap_or("").to_string();
@@ -42,11 +45,11 @@ fn parse_rev_line(line: &str) -> Option<RevEntry> {
     let change_id_prefix_len = f
         .next()
         .and_then(|n| n.parse().ok())
-        .unwrap_or(change_id.len());
+        .unwrap_or(change_id.as_str().len());
     let commit_id_prefix_len = f
         .next()
         .and_then(|n| n.parse().ok())
-        .unwrap_or(commit_id.len());
+        .unwrap_or(commit_id.as_str().len());
     Some(RevEntry {
         graph: graph.to_string(),
         change_id,
@@ -81,10 +84,7 @@ pub fn parse_op_rows(text: &str) -> Vec<OpLogRow> {
 fn parse_op_line(line: &str) -> Option<OpEntry> {
     let (graph, rest) = line.split_once('\0')?;
     let mut f = rest.split('\0');
-    let id = f.next()?.to_string();
-    if id.is_empty() {
-        return None;
-    }
+    let id = OperationId::parse(f.next()?).ok()?;
     Some(OpEntry {
         graph: graph.to_string(),
         id,
@@ -95,29 +95,25 @@ fn parse_op_line(line: &str) -> Option<OpEntry> {
 }
 
 /// Parse `jj bookmark list -T '...'` output: `name NUL remote` per line.
-pub fn parse_bookmarks(text: &str) -> Vec<super::types::BookmarkInfo> {
+pub fn parse_bookmarks(text: &str) -> Vec<BookmarkRef> {
     text.lines()
         .filter_map(|l| {
             let (name, remote) = l.split_once('\0')?;
-            if name.is_empty() {
-                return None;
-            }
-            Some(super::types::BookmarkInfo {
-                name: name.to_string(),
-                remote: (!remote.is_empty()).then(|| remote.to_string()),
-            })
+            let text = if remote.is_empty() {
+                name.to_string()
+            } else {
+                format!("{name}@{remote}")
+            };
+            BookmarkRef::parse(&text).ok()
         })
         .collect()
 }
 
 /// Parse `jj resolve --list` output: one `path    description` per line.
 /// (jj exits non-zero when there are no conflicts; callers pass "" then.)
-pub fn parse_conflict_list(text: &str) -> Vec<String> {
+pub fn parse_conflict_list(text: &str) -> Vec<RepoPath> {
     text.lines()
-        .filter_map(|l| {
-            let path = l.split_whitespace().next()?;
-            (!path.is_empty()).then(|| path.to_string())
-        })
+        .filter_map(|l| RepoPath::parse(l.split_whitespace().next()?).ok())
         .collect()
 }
 
@@ -139,13 +135,12 @@ pub fn parse_diff(text: &str) -> Vec<FileDiff> {
             if let Some(f) = cur.take() {
                 files.push(f);
             }
-            let mut fd = FileDiff::default();
             // Fallback path from the `diff --git a/X b/Y` line; the
             // `+++`/`---` header lines below take precedence.
-            if let Some((_, b)) = rest.split_once(" b/") {
-                fd.path = unquote(b);
-            }
-            cur = Some(fd);
+            cur = rest
+                .split_once(" b/")
+                .and_then(|(_, b)| RepoPath::parse(&unquote(b)).ok())
+                .map(FileDiff::new);
             continue;
         }
         let Some(fd) = cur.as_mut() else { continue };
@@ -163,17 +158,23 @@ pub fn parse_diff(text: &str) -> Vec<FileDiff> {
         } else if line.starts_with("deleted file mode") {
             fd.is_deleted = true;
         } else if let Some(p) = line.strip_prefix("rename from ") {
-            fd.old_path = Some(unquote(p));
+            fd.old_path = RepoPath::parse(&unquote(p)).ok();
         } else if let Some(p) = line.strip_prefix("rename to ") {
-            fd.path = unquote(p);
+            if let Ok(p) = RepoPath::parse(&unquote(p)) {
+                fd.path = p;
+            }
         } else if line.starts_with("Binary files ") || line.starts_with("GIT binary patch") {
             fd.is_binary = true;
         } else if let Some(p) = line.strip_prefix("--- a/") {
             if fd.old_path.is_none() && !fd.is_new {
-                fd.old_path = Some(unquote(p)).filter(|op| *op != fd.path);
+                fd.old_path = RepoPath::parse(&unquote(p))
+                    .ok()
+                    .filter(|op| *op != fd.path);
             }
         } else if let Some(p) = line.strip_prefix("+++ b/") {
-            fd.path = unquote(p);
+            if let Ok(p) = RepoPath::parse(&unquote(p)) {
+                fd.path = p;
+            }
         }
         // "index ...", "old mode", "similarity index", "--- /dev/null",
         // "+++ /dev/null" need no handling.
@@ -246,7 +247,7 @@ mod tests {
             panic!("expected rev")
         };
         assert_eq!(wc.graph, "@");
-        assert_eq!(wc.change_id, "sym");
+        assert_eq!(wc.change_id.as_str(), "sym");
         assert_eq!((wc.change_id_prefix_len, wc.commit_id_prefix_len), (1, 2));
         assert!(wc.is_working_copy);
         assert_eq!(wc.subject, "wip");
@@ -254,7 +255,7 @@ mod tests {
             panic!("expected rev")
         };
         assert_eq!(main.graph, "│ ○  ");
-        assert_eq!(main.bookmarks, "main");
+        assert_eq!(main.bookmarks, vec![BookmarkRef::parse("main").unwrap()]);
         assert_eq!(main.tags, "v1");
         assert_eq!(rows[2], LogRow::Graph("├─╯".to_string()));
         let LogRow::Rev(root) = &rows[3] else {
@@ -269,7 +270,7 @@ mod tests {
         let raw = "~\n\u{0}abc\u{0}111\u{0}\u{0}\u{0}s\u{0}A\u{0}now\u{0}\n";
         let entries = parse_rev_entries(raw);
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].change_id, "abc");
+        assert_eq!(entries[0].change_id.as_str(), "abc");
         assert_eq!(entries[0].graph, "");
         // Without the length fields the whole id counts as prefix.
         assert_eq!(entries[0].change_id_prefix_len, 3);
@@ -284,7 +285,7 @@ mod tests {
             panic!("expected op")
         };
         assert!(cur.is_current);
-        assert_eq!(cur.id, "63130065");
+        assert_eq!(cur.id.as_str(), "63130065");
         assert_eq!(cur.description, "snapshot working copy");
         let OpLogRow::Op(prev) = &rows[1] else {
             panic!("expected op")
@@ -296,16 +297,20 @@ mod tests {
     fn bookmarks_local_and_remote() {
         let raw = "main\u{0}\nmain\u{0}origin\nfeature\u{0}\n";
         let bms = parse_bookmarks(raw);
-        assert_eq!(bms.len(), 3);
-        assert_eq!(bms[0].name, "main");
-        assert_eq!(bms[0].remote, None);
-        assert_eq!(bms[1].remote.as_deref(), Some("origin"));
+        let shown: Vec<String> = bms.iter().map(ToString::to_string).collect();
+        assert_eq!(shown, ["main", "main@origin", "feature"]);
+        assert!(matches!(bms[0], BookmarkRef::Local(_)));
+        assert!(matches!(bms[1], BookmarkRef::Remote(_)));
     }
 
     #[test]
     fn conflict_list_takes_first_column() {
         let raw = "src/main.rs    2-sided conflict\nREADME.md    2-sided conflict\n";
-        assert_eq!(parse_conflict_list(raw), vec!["src/main.rs", "README.md"]);
+        let paths: Vec<String> = parse_conflict_list(raw)
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(paths, ["src/main.rs", "README.md"]);
     }
 
     #[test]
@@ -333,14 +338,14 @@ new file mode 100644
 ";
         let files = parse_diff(raw);
         assert_eq!(files.len(), 2);
-        assert_eq!(files[0].path, "src/a.rs");
+        assert_eq!(files[0].path.as_str(), "src/a.rs");
         assert_eq!(files[0].hunks.len(), 2);
         assert_eq!(files[0].hunks[0].old_start, 1);
         assert_eq!(files[0].hunks[0].new_count, 4);
         assert_eq!(files[0].hunks[0].lines.len(), 4);
         assert_eq!(files[0].hunks[1].lines, vec!["-old", "+new", " ctx"]);
         assert!(files[1].is_new);
-        assert_eq!(files[1].path, "b.txt");
+        assert_eq!(files[1].path.as_str(), "b.txt");
         assert_eq!(files[1].hunks[0].lines, vec!["+hello"]);
     }
 
@@ -356,8 +361,8 @@ index 111..222 100644
 Binary files a/img.png and b/img.png differ
 ";
         let files = parse_diff(raw);
-        assert_eq!(files[0].old_path.as_deref(), Some("old.rs"));
-        assert_eq!(files[0].path, "new.rs");
+        assert_eq!(files[0].old_path.as_ref().unwrap().as_str(), "old.rs");
+        assert_eq!(files[0].path.as_str(), "new.rs");
         assert!(files[1].is_binary);
     }
 

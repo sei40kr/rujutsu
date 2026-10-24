@@ -48,7 +48,7 @@ jobs:
             target
           key: test-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
       # integration tests shell out to a real `jj` binary, which is not
-      # preinstalled on the runner; they skip silently without it
+      # preinstalled on the runner; they fail without it
       - name: Install jj
         run: |
           curl -fsSL -o /tmp/jj.tar.gz \

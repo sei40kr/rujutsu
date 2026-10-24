@@ -8,6 +8,7 @@ use std::rc::Rc;
 use ratatui::style::Color;
 use ratatui::text::Line;
 
+use crate::jj::op::{ChangeId, OperationId, RepoPath};
 use crate::jj::types::DiffArea;
 
 pub type SectionId = u64;
@@ -19,19 +20,19 @@ pub enum SectionValue {
     Group(Group),
     File {
         area: DiffArea,
-        path: String,
+        path: RepoPath,
     },
     Hunk {
         area: DiffArea,
-        path: String,
+        path: RepoPath,
         /// Index into the owning `FileDiff::hunks`.
         hunk_idx: usize,
     },
     Revision {
-        change_id: String,
+        change_id: ChangeId,
     },
     Operation {
-        op_id: String,
+        op_id: OperationId,
     },
     /// Inert content (graph lines, process log entries, headers, ...).
     Text,

@@ -1,96 +1,80 @@
-//! Data-driven transient menus (Magit's popup system). A transient is pure
-//! data: groups of switches and actions. While one is open it captures all
-//! keys; actions collect the enabled switches into CLI flags.
+//! Data-driven transient menus (Magit's popup system). A menu is pure data:
+//! groups of switches and actions over a typed set of choices (`S`), which
+//! is the jj-vocabulary options type the actions need. Switches flip fields
+//! of `S`; an action turns the current `S` into a `TransientAction`. No CLI
+//! flag survives past this module — the labels that look like flags are
+//! display text, as in Magit.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::num::NonZeroUsize;
 
 use ratatui::crossterm::event::KeyCode;
 use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 
 use crate::command::Menu;
+use crate::jj::op::{
+    Author, Checkout, Deletions, EmptiedCommits, EmptiedSource, Fetch, NewBookmarks, Placement,
+    PushOptions, RebaseKind, RunMode, SquashDescription, SquashOptions,
+};
 use crate::keymap::KeyPress;
 use crate::theme::Theme;
 
-/// What an action ultimately runs. The app maps these to jj invocations,
-/// usually against the revision at point (falling back to `@`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// What an action asks for, minus whatever depends on the cursor (the
+/// revision at point, a picked bookmark), which the receiver supplies.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TransientAction {
-    /// `jj describe REV` with $EDITOR.
-    Describe,
-    /// `jj commit` with $EDITOR (describe @ + new child).
-    Commit,
-    /// `jj new REV` — new child of the revision at point.
-    NewChild,
-    /// `jj new --insert-after REV`.
-    NewAfter,
-    /// `jj new --insert-before REV`.
-    NewBefore,
-    /// `jj squash -r REV` — squash into the parent.
-    Squash,
-    /// `jj squash --into REV` — squash the working copy into REV.
-    SquashInto,
-    /// `jj rebase -r REV -d <picked>` — rebase the single revision.
-    RebaseRev,
-    /// `jj rebase -s REV -d <picked>` — rebase REV and descendants.
-    RebaseSource,
-    /// `jj rebase -b REV -d <picked>` — rebase the whole branch.
-    RebaseBranch,
-    /// `jj bookmark create <name> -r REV`.
+    Describe(Author),
+    Commit(Author),
+    New(Placement, Checkout),
+    /// Squash the revision at point into its parent.
+    Squash(SquashOptions),
+    /// Squash the working copy into the revision at point.
+    SquashInto(SquashOptions),
+    Rebase(RebaseKind, EmptiedCommits),
     BookmarkCreate,
-    /// `jj bookmark set <picked> -r REV`.
     BookmarkSet,
-    /// `jj bookmark delete <picked>`.
     BookmarkDelete,
-    /// `jj bookmark rename <picked> <name>`.
     BookmarkRename,
-    /// `jj bookmark track <name@remote>`.
     BookmarkTrack,
-    /// `jj bookmark untrack <name@remote>`.
     BookmarkUntrack,
-    /// `jj bookmark forget <picked>`.
     BookmarkForget,
-    /// `jj git push` (all tracked bookmarks).
-    Push,
-    /// `jj git push --bookmark <picked>`.
-    PushBookmark,
-    /// `jj git push --change REV` (auto-creates a bookmark).
-    PushChange,
-    /// `jj git fetch`.
-    Fetch,
-    /// `jj git fetch --all-remotes`.
-    FetchAllRemotes,
-    /// Log the default revset in a new buffer.
-    LogDefault,
-    /// Log all revisions (`-r ::`).
-    LogAll,
-    /// Prompt for a revset, then log it.
-    LogRevset,
+    /// Push every tracked bookmark.
+    Push(PushOptions),
+    /// Push a picked bookmark.
+    PushBookmark(PushOptions),
+    /// Push the change at point under an auto-created bookmark.
+    PushChange(PushOptions),
+    Fetch(Fetch),
+    LogDefault(Option<NonZeroUsize>),
+    LogAll(Option<NonZeroUsize>),
+    LogRevset(Option<NonZeroUsize>),
 }
 
-#[derive(Debug, Clone, Copy)]
-pub enum Item {
-    /// A boolean flag, toggled on/off.
+pub enum Item<S: 'static> {
     Switch {
         key: &'static str,
-        flag: &'static str,
+        label: &'static str,
         desc: &'static str,
+        toggle: fn(&mut S),
+        is_on: fn(&S) -> bool,
     },
-    /// A flag that takes a value (e.g. `-n`). Selecting it prompts for
-    /// the value; the flag and value are passed as two separate arguments.
+    /// A choice that takes a typed value. Selecting it prompts; the text is
+    /// parsed by `set` (empty clears) and `shown` renders the current value.
     Arg {
         key: &'static str,
-        flag: &'static str,
+        label: &'static str,
         desc: &'static str,
+        set: fn(&mut S, &str) -> Result<(), String>,
+        shown: fn(&S) -> Option<String>,
     },
     Action {
         key: &'static str,
         desc: &'static str,
-        action: TransientAction,
+        build: fn(&S) -> TransientAction,
     },
 }
 
-impl Item {
+impl<S> Item<S> {
     fn key(&self) -> &'static str {
         match self {
             Item::Switch { key, .. } | Item::Arg { key, .. } | Item::Action { key, .. } => key,
@@ -98,357 +82,395 @@ impl Item {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct GroupDef {
+pub struct Group<S: 'static> {
     pub title: &'static str,
-    pub items: &'static [Item],
+    pub items: &'static [Item<S>],
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct TransientDef {
+pub struct MenuDef<S: 'static> {
     pub title: &'static str,
-    pub groups: &'static [GroupDef],
-    /// Switch flags enabled when the menu opens (Magit's `:value`).
-    pub defaults: &'static [&'static str],
-    /// Sets of mutually exclusive switches (Magit's `:incompatible`):
-    /// enabling one clears the others in its set.
-    pub incompatible: &'static [&'static [&'static str]],
+    pub groups: &'static [Group<S>],
 }
 
-pub static DESCRIBE: TransientDef = TransientDef {
+fn flip_author(a: &mut Author) {
+    *a = match a {
+        Author::Keep => Author::ResetToCurrentUser,
+        Author::ResetToCurrentUser => Author::Keep,
+    };
+}
+
+const RESET_AUTHOR: Item<Author> = Item::Switch {
+    key: "-a",
+    label: "--reset-author",
+    desc: "Reset the author to yourself",
+    toggle: flip_author,
+    is_on: |a| *a == Author::ResetToCurrentUser,
+};
+
+pub static DESCRIBE: MenuDef<Author> = MenuDef {
     title: "Describe",
-    defaults: &[],
-    incompatible: &[],
     groups: &[
-        GroupDef {
+        Group {
             title: "Arguments",
-            items: &[Item::Switch {
-                key: "-a",
-                flag: "--reset-author",
-                desc: "Reset the author to yourself",
-            }],
+            items: &[RESET_AUTHOR],
         },
-        GroupDef {
+        Group {
             title: "Actions",
             items: &[Item::Action {
                 key: "c",
                 desc: "Describe the revision at point",
-                action: TransientAction::Describe,
+                build: |a| TransientAction::Describe(*a),
             }],
         },
     ],
 };
 
-pub static COMMIT: TransientDef = TransientDef {
+pub static COMMIT: MenuDef<Author> = MenuDef {
     title: "Commit",
-    defaults: &[],
-    incompatible: &[],
     groups: &[
-        GroupDef {
+        Group {
             title: "Arguments",
-            items: &[Item::Switch {
-                key: "-a",
-                flag: "--reset-author",
-                desc: "Reset the author to yourself",
-            }],
+            items: &[RESET_AUTHOR],
         },
-        GroupDef {
+        Group {
             title: "Actions",
             items: &[Item::Action {
                 key: "c",
                 desc: "Commit the working copy (describe + new)",
-                action: TransientAction::Commit,
+                build: |a| TransientAction::Commit(*a),
             }],
         },
     ],
 };
 
-pub static NEW: TransientDef = TransientDef {
+pub static NEW: MenuDef<Checkout> = MenuDef {
     title: "New change",
-    defaults: &[],
-    incompatible: &[],
     groups: &[
-        GroupDef {
+        Group {
             title: "Arguments",
             items: &[Item::Switch {
                 key: "-E",
-                flag: "--no-edit",
+                label: "--no-edit",
                 desc: "Do not switch to the new change",
+                toggle: |c| {
+                    *c = match c {
+                        Checkout::MoveWorkingCopy => Checkout::StayPut,
+                        Checkout::StayPut => Checkout::MoveWorkingCopy,
+                    }
+                },
+                is_on: |c| *c == Checkout::StayPut,
             }],
         },
-        GroupDef {
+        Group {
             title: "Actions",
             items: &[
                 Item::Action {
                     key: "o",
                     desc: "New child of the revision at point",
-                    action: TransientAction::NewChild,
+                    build: |c| TransientAction::New(Placement::ChildOf, *c),
                 },
                 Item::Action {
                     key: "a",
                     desc: "Insert after the revision at point",
-                    action: TransientAction::NewAfter,
+                    build: |c| TransientAction::New(Placement::After, *c),
                 },
                 Item::Action {
                     key: "b",
                     desc: "Insert before the revision at point",
-                    action: TransientAction::NewBefore,
+                    build: |c| TransientAction::New(Placement::Before, *c),
                 },
             ],
         },
     ],
 };
 
-pub static SQUASH: TransientDef = TransientDef {
+pub static SQUASH: MenuDef<SquashOptions> = MenuDef {
     title: "Squash",
-    defaults: &[],
-    incompatible: &[],
     groups: &[
-        GroupDef {
+        Group {
             title: "Arguments",
             items: &[
                 Item::Switch {
                     key: "-k",
-                    flag: "--keep-emptied",
+                    label: "--keep-emptied",
                     desc: "Keep the emptied source revision",
+                    toggle: |o| {
+                        o.emptied = match o.emptied {
+                            EmptiedSource::Abandon => EmptiedSource::Keep,
+                            EmptiedSource::Keep => EmptiedSource::Abandon,
+                        }
+                    },
+                    is_on: |o| o.emptied == EmptiedSource::Keep,
                 },
                 Item::Switch {
                     key: "-u",
-                    flag: "--use-destination-message",
+                    label: "--use-destination-message",
                     desc: "Keep the destination's description",
+                    toggle: |o| {
+                        o.description = match o.description {
+                            SquashDescription::Combine => SquashDescription::UseDestination,
+                            SquashDescription::UseDestination => SquashDescription::Combine,
+                        }
+                    },
+                    is_on: |o| o.description == SquashDescription::UseDestination,
                 },
             ],
         },
-        GroupDef {
+        Group {
             title: "Actions",
             items: &[
                 Item::Action {
                     key: "s",
                     desc: "Squash the revision at point into its parent",
-                    action: TransientAction::Squash,
+                    build: |o| TransientAction::Squash(o.clone()),
                 },
                 Item::Action {
                     key: "t",
                     desc: "Squash the working copy into the revision at point",
-                    action: TransientAction::SquashInto,
+                    build: |o| TransientAction::SquashInto(o.clone()),
                 },
             ],
         },
     ],
 };
 
-pub static REBASE: TransientDef = TransientDef {
+pub static REBASE: MenuDef<EmptiedCommits> = MenuDef {
     title: "Rebase",
-    defaults: &[],
-    incompatible: &[],
     groups: &[
-        GroupDef {
+        Group {
             title: "Arguments",
             items: &[Item::Switch {
                 key: "-e",
-                flag: "--skip-emptied",
+                label: "--skip-emptied",
                 desc: "Abandon revisions that become empty",
+                toggle: |e| {
+                    *e = match e {
+                        EmptiedCommits::Keep => EmptiedCommits::Skip,
+                        EmptiedCommits::Skip => EmptiedCommits::Keep,
+                    }
+                },
+                is_on: |e| *e == EmptiedCommits::Skip,
             }],
         },
-        GroupDef {
+        Group {
             title: "Actions",
             items: &[
                 Item::Action {
                     key: "r",
                     desc: "Rebase the revision at point",
-                    action: TransientAction::RebaseRev,
+                    build: |e| TransientAction::Rebase(RebaseKind::Revision, *e),
                 },
                 Item::Action {
                     key: "s",
                     desc: "Rebase the revision and its descendants",
-                    action: TransientAction::RebaseSource,
+                    build: |e| TransientAction::Rebase(RebaseKind::WithDescendants, *e),
                 },
                 Item::Action {
                     key: "b",
                     desc: "Rebase the whole branch",
-                    action: TransientAction::RebaseBranch,
+                    build: |e| TransientAction::Rebase(RebaseKind::Branch, *e),
                 },
             ],
         },
     ],
 };
 
-pub static BOOKMARK: TransientDef = TransientDef {
+pub static BOOKMARK: MenuDef<()> = MenuDef {
     title: "Bookmark",
-    defaults: &[],
-    incompatible: &[],
-    groups: &[GroupDef {
+    groups: &[Group {
         title: "Actions",
         items: &[
             Item::Action {
                 key: "c",
                 desc: "Create at the revision at point",
-                action: TransientAction::BookmarkCreate,
+                build: |_| TransientAction::BookmarkCreate,
             },
             Item::Action {
                 key: "s",
                 desc: "Set (move) to the revision at point",
-                action: TransientAction::BookmarkSet,
+                build: |_| TransientAction::BookmarkSet,
             },
             Item::Action {
                 key: "d",
                 desc: "Delete",
-                action: TransientAction::BookmarkDelete,
+                build: |_| TransientAction::BookmarkDelete,
             },
             Item::Action {
                 key: "r",
                 desc: "Rename",
-                action: TransientAction::BookmarkRename,
+                build: |_| TransientAction::BookmarkRename,
             },
             Item::Action {
                 key: "t",
                 desc: "Track a remote bookmark",
-                action: TransientAction::BookmarkTrack,
+                build: |_| TransientAction::BookmarkTrack,
             },
             Item::Action {
                 key: "u",
                 desc: "Untrack a remote bookmark",
-                action: TransientAction::BookmarkUntrack,
+                build: |_| TransientAction::BookmarkUntrack,
             },
             Item::Action {
                 key: "f",
                 desc: "Forget (local and remote refs)",
-                action: TransientAction::BookmarkForget,
+                build: |_| TransientAction::BookmarkForget,
             },
         ],
     }],
 };
 
-pub static PUSH: TransientDef = TransientDef {
+pub static PUSH: MenuDef<PushOptions> = MenuDef {
     title: "Push",
-    defaults: &[],
-    incompatible: &[],
     groups: &[
-        GroupDef {
+        Group {
             title: "Arguments",
             items: &[
                 Item::Switch {
                     key: "-N",
-                    flag: "--allow-new",
+                    label: "--allow-new",
                     desc: "Allow pushing new bookmarks",
+                    toggle: |o| {
+                        o.new_bookmarks = match o.new_bookmarks {
+                            NewBookmarks::Reject => NewBookmarks::Allow,
+                            NewBookmarks::Allow => NewBookmarks::Reject,
+                        }
+                    },
+                    is_on: |o| o.new_bookmarks == NewBookmarks::Allow,
                 },
                 Item::Switch {
                     key: "-d",
-                    flag: "--deleted",
+                    label: "--deleted",
                     desc: "Push deleted bookmarks",
+                    toggle: |o| {
+                        o.deletions = match o.deletions {
+                            Deletions::Skip => Deletions::Propagate,
+                            Deletions::Propagate => Deletions::Skip,
+                        }
+                    },
+                    is_on: |o| o.deletions == Deletions::Propagate,
                 },
                 Item::Switch {
                     key: "-n",
-                    flag: "--dry-run",
+                    label: "--dry-run",
                     desc: "Only show what would change",
+                    toggle: |o| {
+                        o.mode = match o.mode {
+                            RunMode::Apply => RunMode::DryRun,
+                            RunMode::DryRun => RunMode::Apply,
+                        }
+                    },
+                    is_on: |o| o.mode == RunMode::DryRun,
                 },
             ],
         },
-        GroupDef {
+        Group {
             title: "Actions",
             items: &[
                 Item::Action {
                     key: "p",
                     desc: "Push all tracked bookmarks",
-                    action: TransientAction::Push,
+                    build: |o| TransientAction::Push(o.clone()),
                 },
                 Item::Action {
                     key: "b",
                     desc: "Push a bookmark",
-                    action: TransientAction::PushBookmark,
+                    build: |o| TransientAction::PushBookmark(o.clone()),
                 },
                 Item::Action {
                     key: "c",
                     desc: "Push the change at point (creates a bookmark)",
-                    action: TransientAction::PushChange,
+                    build: |o| TransientAction::PushChange(o.clone()),
                 },
             ],
         },
     ],
 };
 
-pub static FETCH: TransientDef = TransientDef {
+pub static FETCH: MenuDef<()> = MenuDef {
     title: "Fetch",
-    defaults: &[],
-    incompatible: &[],
-    groups: &[GroupDef {
+    groups: &[Group {
         title: "Actions",
         items: &[
             Item::Action {
                 key: "f",
                 desc: "Fetch from the default remote",
-                action: TransientAction::Fetch,
+                build: |_| TransientAction::Fetch(Fetch::DefaultRemote),
             },
             Item::Action {
                 key: "a",
                 desc: "Fetch from all remotes",
-                action: TransientAction::FetchAllRemotes,
+                build: |_| TransientAction::Fetch(Fetch::AllRemotes),
             },
         ],
     }],
 };
 
-pub static LOG: TransientDef = TransientDef {
+/// The log menu's choices: an optional row limit.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LogChoices {
+    pub limit: Option<NonZeroUsize>,
+}
+
+pub static LOG: MenuDef<LogChoices> = MenuDef {
     title: "Log",
-    defaults: &[],
-    incompatible: &[],
     groups: &[
-        GroupDef {
+        Group {
             title: "Arguments",
             items: &[Item::Arg {
                 key: "-n",
-                flag: "-n",
+                label: "-n",
                 desc: "Limit number of revisions",
+                set: |c, text| {
+                    if text.is_empty() {
+                        c.limit = None;
+                        return Ok(());
+                    }
+                    c.limit = Some(
+                        text.parse()
+                            .map_err(|_| "limit must be a positive number".to_string())?,
+                    );
+                    Ok(())
+                },
+                shown: |c| c.limit.map(|n| n.to_string()),
             }],
         },
-        GroupDef {
+        Group {
             title: "Actions",
             items: &[
                 Item::Action {
                     key: "l",
                     desc: "Log the default revset",
-                    action: TransientAction::LogDefault,
+                    build: |c| TransientAction::LogDefault(c.limit),
                 },
                 Item::Action {
                     key: "a",
                     desc: "Log all revisions",
-                    action: TransientAction::LogAll,
+                    build: |c| TransientAction::LogAll(c.limit),
                 },
                 Item::Action {
                     key: "o",
                     desc: "Log another revset",
-                    action: TransientAction::LogRevset,
+                    build: |c| TransientAction::LogRevset(c.limit),
                 },
             ],
         },
     ],
 };
 
-/// Resolve a `Command::Transient(menu)` to its definition. A new menu adds
-/// one arm here and nothing in `App::dispatch`.
-pub fn menu_def(menu: Menu) -> &'static TransientDef {
+/// Open a `Command::Transient(menu)`. A new menu adds one arm here and
+/// nothing in `App::dispatch`.
+pub fn open(menu: Menu) -> Box<dyn OpenMenu> {
     match menu {
-        Menu::Describe => &DESCRIBE,
-        Menu::Commit => &COMMIT,
-        Menu::New => &NEW,
-        Menu::Squash => &SQUASH,
-        Menu::Rebase => &REBASE,
-        Menu::Bookmark => &BOOKMARK,
-        Menu::Push => &PUSH,
-        Menu::Fetch => &FETCH,
-        Menu::Log => &LOG,
+        Menu::Describe => Box::new(TransientState::new(&DESCRIBE)),
+        Menu::Commit => Box::new(TransientState::new(&COMMIT)),
+        Menu::New => Box::new(TransientState::new(&NEW)),
+        Menu::Squash => Box::new(TransientState::new(&SQUASH)),
+        Menu::Rebase => Box::new(TransientState::new(&REBASE)),
+        Menu::Bookmark => Box::new(TransientState::new(&BOOKMARK)),
+        Menu::Push => Box::new(TransientState::new(&PUSH)),
+        Menu::Fetch => Box::new(TransientState::new(&FETCH)),
+        Menu::Log => Box::new(TransientState::new(&LOG)),
     }
-}
-
-/// A currently-open transient: the definition plus toggled switches and the
-/// multi-char key input buffer (switch keys like "-a" are two keystrokes).
-#[derive(Debug, Clone)]
-pub struct TransientState {
-    pub def: &'static TransientDef,
-    pub enabled: BTreeSet<&'static str>,
-    /// Value arguments (`-n` → "50"), set via a value prompt.
-    pub values: BTreeMap<&'static str, String>,
-    pub pending: String,
 }
 
 /// Outcome of feeding one key to an open transient.
@@ -456,48 +478,61 @@ pub struct TransientState {
 pub enum TransientResult {
     /// Key consumed (switch toggled or prefix pending); keep the menu open.
     Consumed,
-    /// Prompt for this value argument's value; the menu stays open.
+    /// Prompt for the value of the `Arg` item with this key; the menu stays
+    /// open and the answer comes back through `OpenMenu::set_value`.
     Prompt {
-        flag: &'static str,
+        key: &'static str,
         desc: &'static str,
     },
-    /// Run this action with these collected CLI flags; menu closes.
-    Invoke(TransientAction, Vec<String>),
+    /// Run this action; menu closes.
+    Invoke(TransientAction),
     /// Close without running anything.
     Cancel,
     /// Key didn't match any item.
     Unbound,
 }
 
-impl TransientState {
-    pub fn new(def: &'static TransientDef) -> Self {
+/// An open menu with its choice type erased, so `App` can hold any menu.
+pub trait OpenMenu {
+    fn title(&self) -> &'static str;
+    fn on_key(&mut self, kp: &KeyPress) -> TransientResult;
+    /// Answer a `Prompt` for the `Arg` with `key`. `Err` is a message for
+    /// the user; the previous value stays.
+    fn set_value(&mut self, key: &str, text: &str) -> Result<(), String>;
+    /// Lines for the bottom panel.
+    fn render_lines(&self, t: &Theme) -> Vec<Line<'static>>;
+}
+
+/// A currently-open transient: the definition, the choices made so far and
+/// the multi-char key input buffer (switch keys like "-a" are two keystrokes).
+pub struct TransientState<S: 'static> {
+    def: &'static MenuDef<S>,
+    pub choices: S,
+    pending: String,
+}
+
+impl<S: Default + 'static> TransientState<S> {
+    pub fn new(def: &'static MenuDef<S>) -> Self {
         Self {
             def,
-            enabled: def.defaults.iter().copied().collect(),
-            values: BTreeMap::new(),
+            choices: S::default(),
             pending: String::new(),
         }
     }
+}
 
-    /// Set (or clear, when empty) a value argument's value.
-    pub fn set_value(&mut self, flag: &'static str, value: String) {
-        if value.is_empty() {
-            self.values.remove(flag);
-        } else {
-            self.values.insert(flag, value);
-        }
+impl<S: 'static> TransientState<S> {
+    fn items(&self) -> impl Iterator<Item = &'static Item<S>> {
+        self.def.groups.iter().flat_map(|g| g.items.iter())
+    }
+}
+
+impl<S: 'static> OpenMenu for TransientState<S> {
+    fn title(&self) -> &'static str {
+        self.def.title
     }
 
-    pub fn args(&self) -> Vec<String> {
-        let mut out: Vec<String> = self.enabled.iter().map(|f| f.to_string()).collect();
-        for (flag, val) in &self.values {
-            out.push(flag.to_string());
-            out.push(val.clone());
-        }
-        out
-    }
-
-    pub fn on_key(&mut self, kp: &KeyPress) -> TransientResult {
+    fn on_key(&mut self, kp: &KeyPress) -> TransientResult {
         if kp.code == KeyCode::Esc
             || (kp.code == KeyCode::Char('g')
                 && kp
@@ -515,29 +550,17 @@ impl TransientState {
         };
         self.pending.push(c);
 
-        let items = || self.def.groups.iter().flat_map(|g| g.items.iter());
-        if let Some(item) = items().find(|i| i.key() == self.pending) {
+        if let Some(item) = self.items().find(|i| i.key() == self.pending) {
             self.pending.clear();
-            match *item {
-                Item::Switch { flag, .. } => {
-                    if !self.enabled.remove(flag) {
-                        self.enabled.insert(flag);
-                        // Enabling a switch clears the rest of its
-                        // incompatible set.
-                        for set in self.def.incompatible {
-                            if set.contains(&flag) {
-                                for other in set.iter().filter(|o| **o != flag) {
-                                    self.enabled.remove(other);
-                                }
-                            }
-                        }
-                    }
+            match item {
+                Item::Switch { toggle, .. } => {
+                    toggle(&mut self.choices);
                     TransientResult::Consumed
                 }
-                Item::Arg { flag, desc, .. } => TransientResult::Prompt { flag, desc },
-                Item::Action { action, .. } => TransientResult::Invoke(action, self.args()),
+                Item::Arg { key, desc, .. } => TransientResult::Prompt { key, desc },
+                Item::Action { build, .. } => TransientResult::Invoke(build(&self.choices)),
             }
-        } else if items().any(|i| i.key().starts_with(&self.pending)) {
+        } else if self.items().any(|i| i.key().starts_with(&self.pending)) {
             TransientResult::Consumed
         } else {
             self.pending.clear();
@@ -545,8 +568,14 @@ impl TransientState {
         }
     }
 
-    /// Lines for the bottom panel.
-    pub fn render_lines(&self, t: &Theme) -> Vec<Line<'static>> {
+    fn set_value(&mut self, key: &str, text: &str) -> Result<(), String> {
+        match self.items().find(|i| i.key() == key) {
+            Some(Item::Arg { set, .. }) => set(&mut self.choices, text.trim()),
+            _ => Err(format!("{key} takes no value")),
+        }
+    }
+
+    fn render_lines(&self, t: &Theme) -> Vec<Line<'static>> {
         let mut out = Vec::new();
         for group in self.def.groups {
             out.push(Line::from(Span::styled(
@@ -554,10 +583,15 @@ impl TransientState {
                 Style::new().fg(t.menu_title).add_modifier(Modifier::BOLD),
             )));
             for item in group.items {
-                match *item {
-                    Item::Switch { key, flag, desc } => {
-                        let on = self.enabled.contains(flag);
-                        let flag_style = if on {
+                match item {
+                    Item::Switch {
+                        key,
+                        label,
+                        desc,
+                        is_on,
+                        ..
+                    } => {
+                        let style = if is_on(&self.choices) {
                             Style::new().fg(t.transient_argument).bold()
                         } else {
                             Style::new().dim()
@@ -565,22 +599,28 @@ impl TransientState {
                         out.push(Line::from(vec![
                             Span::raw(" "),
                             Span::styled(format!("{key:<4}"), Style::new().fg(t.key)),
-                            Span::styled(format!("{flag:<26}"), flag_style),
+                            Span::styled(format!("{label:<26}"), style),
                             Span::raw(desc.to_string()),
                         ]));
                     }
-                    Item::Arg { key, flag, desc } => {
-                        let (shown, style) = match self.values.get(flag) {
+                    Item::Arg {
+                        key,
+                        label,
+                        desc,
+                        shown,
+                        ..
+                    } => {
+                        let (text, style) = match shown(&self.choices) {
                             Some(v) => (
-                                format!("{flag} {v}"),
+                                format!("{label} {v}"),
                                 Style::new().fg(t.transient_argument).bold(),
                             ),
-                            None => (flag.to_string(), Style::new().dim()),
+                            None => (label.to_string(), Style::new().dim()),
                         };
                         out.push(Line::from(vec![
                             Span::raw(" "),
                             Span::styled(format!("{key:<4}"), Style::new().fg(t.key)),
-                            Span::styled(format!("{shown:<26}"), style),
+                            Span::styled(format!("{text:<26}"), style),
                             Span::raw(desc.to_string()),
                         ]));
                     }
@@ -612,53 +652,54 @@ mod tests {
         let mut st = TransientState::new(&SQUASH);
         assert_eq!(st.on_key(&key('-')), TransientResult::Consumed);
         assert_eq!(st.on_key(&key('k')), TransientResult::Consumed);
-        assert!(st.enabled.contains("--keep-emptied"));
+        assert_eq!(st.choices.emptied, EmptiedSource::Keep);
         // Toggling off again.
         st.on_key(&key('-'));
         st.on_key(&key('k'));
-        assert!(st.enabled.is_empty());
+        assert_eq!(st.choices, SquashOptions::default());
     }
 
     #[test]
-    fn action_collects_enabled_flags() {
+    fn action_carries_the_choices_made() {
         let mut st = TransientState::new(&SQUASH);
         st.on_key(&key('-'));
         st.on_key(&key('u'));
-        match st.on_key(&key('s')) {
-            TransientResult::Invoke(TransientAction::Squash, args) => {
-                assert_eq!(args, vec!["--use-destination-message"]);
-            }
-            other => panic!("unexpected: {other:?}"),
-        }
+        assert_eq!(
+            st.on_key(&key('s')),
+            TransientResult::Invoke(TransientAction::Squash(SquashOptions {
+                emptied: EmptiedSource::Abandon,
+                description: SquashDescription::UseDestination,
+            }))
+        );
     }
 
     #[test]
-    fn value_arg_prompts_then_collects_flag_and_value() {
+    fn value_arg_prompts_then_parses_into_the_choice() {
         let mut st = TransientState::new(&LOG);
         assert_eq!(st.on_key(&key('-')), TransientResult::Consumed);
         assert_eq!(
             st.on_key(&key('n')),
             TransientResult::Prompt {
-                flag: "-n",
+                key: "-n",
                 desc: "Limit number of revisions",
             }
         );
-        st.set_value("-n", "50".into());
-        match st.on_key(&key('l')) {
-            TransientResult::Invoke(TransientAction::LogDefault, args) => {
-                assert_eq!(args, vec!["-n", "50"]);
-            }
-            other => panic!("unexpected: {other:?}"),
-        }
+        st.set_value("-n", "50").unwrap();
+        assert_eq!(
+            st.on_key(&key('l')),
+            TransientResult::Invoke(TransientAction::LogDefault(NonZeroUsize::new(50)))
+        );
     }
 
     #[test]
-    fn empty_value_clears_the_arg() {
+    fn bad_value_is_rejected_and_empty_clears() {
         let mut st = TransientState::new(&LOG);
-        st.set_value("-n", "50".into());
-        assert_eq!(st.args(), vec!["-n", "50"]);
-        st.set_value("-n", String::new());
-        assert!(st.args().is_empty());
+        st.set_value("-n", "50").unwrap();
+        assert!(st.set_value("-n", "lots").is_err());
+        assert!(st.set_value("-n", "0").is_err());
+        assert_eq!(st.choices.limit, NonZeroUsize::new(50));
+        st.set_value("-n", "").unwrap();
+        assert_eq!(st.choices.limit, None);
     }
 
     #[test]
@@ -668,13 +709,11 @@ mod tests {
         let mut st = TransientState::new(&NEW);
         st.on_key(&key('-'));
         st.on_key(&key('E'));
-        assert!(st.enabled.contains("--no-edit"));
-        match st.on_key(&key('b')) {
-            TransientResult::Invoke(TransientAction::NewBefore, args) => {
-                assert_eq!(args, vec!["--no-edit"]);
-            }
-            other => panic!("unexpected: {other:?}"),
-        }
+        assert_eq!(st.choices, Checkout::StayPut);
+        assert_eq!(
+            st.on_key(&key('b')),
+            TransientResult::Invoke(TransientAction::New(Placement::Before, Checkout::StayPut))
+        );
     }
 
     #[test]

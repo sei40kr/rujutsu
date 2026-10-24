@@ -11,8 +11,8 @@ there apply here.
 
 - `cargo build` — binary at `target/debug/rujutsu`
 - `cargo test` — unit + integration tests. Integration tests
-  (`tests/jj_integration.rs`) shell out to a real `jj` binary and skip
-  silently when it is not installed.
+  (`tests/jj_integration/`, one module per operation) run the CLI adapter
+  against a real `jj` binary and fail when it is not installed.
 - `cargo test <name>` — run a single test; `cargo test --test jj_integration`
   for just the integration suite.
 - `cargo clippy --all-targets -- -D warnings` — CI enforces zero warnings.
@@ -29,15 +29,16 @@ Elm-style loop: `main.rs` owns the terminal and drains one
 draws. Everything — terminal input, worker-thread completions, `.jj` fs
 notifications — funnels into that single channel (`src/event.rs`).
 
-- **jj via CLI, parsers pure** — `jj/client.rs` shells out to `jj`;
+- **jj is a port** — clean architecture: `jj/op.rs` (domain types),
+  `jj::Jj` (port), `jj/cli.rs` (the CLI adapter; `jj/fake.rs` for tests).
   `jj/parse.rs` is I/O-free and unit-tested against fixture strings. Log rows
-  use a NUL-delimited template (`LOG_TEMPLATE`) so the graph prefix and fields
-  split unambiguously.
+  use a NUL-delimited template (`LOG_TEMPLATE`) so the graph prefix and
+  fields split unambiguously.
 - **Reads never snapshot** — all jj reads pass `--ignore-working-copy` so they
   don't write an operation and re-trigger the fs watcher. The one deliberate
-  exception is the working-copy read at the top of `read_snapshot`, which
+  exception is the working-copy read at the top of `JjCli::snapshot`, which
   snapshots so external edits show up.
-- **Mutations on worker threads** — `app/workers.rs::run_jj_bg` spawns a
+- **Mutations on worker threads** — `app/workers.rs::run_bg` spawns a
   thread; completion returns as `AppEvent::JjDone` and triggers a refresh.
   Generation counters (`refresh_gen`) plus `refresh_inflight`/`refresh_dirty`
   discard stale snapshots and coalesce watcher bursts.
@@ -53,11 +54,11 @@ notifications — funnels into that single channel (`src/event.rs`).
 - **Key routing priority** — `app/keys.rs`: confirm > minibuffer input > help
   > transient > keymap.
 - **Transients are data** — `ui/transient.rs` defines menus as groups of
-  switches/actions; `app/ops/` has one module per menu family (revise,
-  rebase, bookmark, remote, log). Adding a menu: a `TransientDef` +
-  `menu_def` arm in `ui/transient.rs`, a `Menu` variant in `command.rs`, a
-  new file under `app/ops/`, and one routing arm in each of the two matches
-  in `app/ops/mod.rs`. `App::dispatch` never grows.
+  switches/actions over a typed choices value (`MenuDef<S>`); `app/ops/` has
+  one module per menu family (revise, rebase, bookmark, remote, log). Adding
+  a menu: a `MenuDef` + `open` arm in `ui/transient.rs`, a `Menu` variant in
+  `command.rs`, a new file under `app/ops/`, and one routing arm in
+  `app/ops/mod.rs`. `App::dispatch` never grows.
 - **DWIM dispatch** — `app/dwim.rs`: commands act on the `SectionValue` at
   point (e.g. `x` abandons a revision or restores a file depending on
   cursor position).
@@ -70,7 +71,9 @@ notifications — funnels into that single channel (`src/event.rs`).
 - No hardcoded colors in build/render code — every color is a named role on
   `Theme` (`src/theme/mod.rs`), overridable from `[colors]` in config. New
   theme presets are one file under `src/theme/` plus a `PRESETS` row.
-- Pure modules stay I/O-free: `jj/parse.rs`, `ui/section.rs`, `ui/pane.rs`.
+- Pure modules stay I/O-free: `jj/op.rs`, `jj/parse.rs`, `ui/section.rs`,
+  `ui/pane.rs`, `ui/transient.rs`.
+- Command lines exist only in `jj/cli.rs`; `app/` and `ui/` speak `jj::op`.
 - `App::update` and `App::dispatch` are routers — behavior lives in the
   `app/` submodules (keys, dwim, search, workers, ops).
 - Config parse errors surface as startup warnings, never aborts.

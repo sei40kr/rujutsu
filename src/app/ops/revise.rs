@@ -3,92 +3,139 @@
 //! main loop as an `EditorRequest`, which suspends the TUI for the
 //! duration; the rest runs in the background.
 
+use crate::jj::op::{
+    Commit, Describe, NewChange, Placement, Revset, Squash, SquashDescription, SquashMessage,
+    SquashOptions, SquashSource,
+};
 use crate::jj::types::DiffArea;
 use crate::ui::section::SectionValue;
 use crate::ui::transient::TransientAction;
 
-use super::super::{App, EditorRequest};
+use super::super::App;
+
+/// Squash DWIM: on a working-copy file/hunk squash just that path into the
+/// parent (Magit's stage-like gesture); on a revision squash it into its
+/// own parent; anywhere else squash @.
+fn squash_source(value: SectionValue) -> SquashSource {
+    match value {
+        SectionValue::File {
+            area: DiffArea::WorkingCopy,
+            path,
+        }
+        | SectionValue::Hunk {
+            area: DiffArea::WorkingCopy,
+            path,
+            ..
+        } => SquashSource::WorkingCopyPath(path),
+        SectionValue::Revision { change_id } => SquashSource::Revision(change_id.into()),
+        _ => SquashSource::Revision(Revset::working_copy()),
+    }
+}
 
 impl App {
-    pub(super) fn revise_action(&mut self, action: TransientAction, args: Vec<String>) {
+    pub(super) fn revise_action(&mut self, action: TransientAction) {
         let rev = self.rev_at_point();
         match action {
-            TransientAction::Describe => {
-                let mut full = vec!["describe".to_string(), rev.clone()];
-                full.extend(args);
-                self.request_editor(EditorRequest::new(format!("describe {rev}"), full));
+            TransientAction::Describe(author) => {
+                let op = Describe { rev, author };
+                self.request_editor(format!("describe {}", op.rev), move |jj| {
+                    jj.describe_in_editor(&op)
+                });
             }
-            TransientAction::Commit => {
-                let mut full = vec!["commit".to_string()];
-                full.extend(args);
-                self.request_editor(EditorRequest::new("commit", full));
+            TransientAction::Commit(author) => {
+                let op = Commit { author };
+                self.request_editor("commit", move |jj| jj.commit_in_editor(&op));
             }
-            TransientAction::NewChild => {
-                let mut full = vec!["new".to_string(), rev.clone()];
-                full.extend(args);
-                self.run_jj_bg(format!("new child of {rev}"), full);
+            TransientAction::New(placement, checkout) => {
+                let desc = match placement {
+                    Placement::ChildOf => format!("new child of {rev}"),
+                    Placement::After => format!("new after {rev}"),
+                    Placement::Before => format!("new before {rev}"),
+                };
+                let op = NewChange {
+                    anchor: rev,
+                    placement,
+                    checkout,
+                };
+                self.run_bg(desc, move |jj| jj.new_change(&op));
             }
-            TransientAction::NewAfter => {
-                let mut full = vec!["new".to_string(), "--insert-after".to_string(), rev.clone()];
-                full.extend(args);
-                self.run_jj_bg(format!("new after {rev}"), full);
+            TransientAction::Squash(options) => {
+                let value = self
+                    .panes
+                    .last()
+                    .map(|p| p.value_at_cursor())
+                    .unwrap_or(SectionValue::Root);
+                let source = squash_source(value);
+                let desc = match &source {
+                    SquashSource::WorkingCopyPath(p) => format!("squash {p}"),
+                    SquashSource::Revision(r) => format!("squash {r}"),
+                    SquashSource::WorkingCopyInto(r) => format!("squash into {r}"),
+                };
+                self.squash(desc, source, options);
             }
-            TransientAction::NewBefore => {
-                let mut full = vec![
-                    "new".to_string(),
-                    "--insert-before".to_string(),
-                    rev.clone(),
-                ];
-                full.extend(args);
-                self.run_jj_bg(format!("new before {rev}"), full);
-            }
-            TransientAction::Squash => self.squash_dwim(args),
-            TransientAction::SquashInto => {
+            TransientAction::SquashInto(options) => {
                 // Move the working copy's changes into the revision at point.
-                let mut full = vec!["squash".to_string(), "--into".to_string(), rev.clone()];
-                full.extend(args);
-                self.request_editor(EditorRequest::new(format!("squash into {rev}"), full));
+                let desc = format!("squash into {rev}");
+                self.squash(desc, SquashSource::WorkingCopyInto(rev), options);
             }
             _ => unreachable!("routed by invoke_transient"),
         }
     }
 
-    /// Squash DWIM: on a working-copy file/hunk squash just that path into
-    /// the parent (Magit's stage-like gesture); on a revision squash it into
-    /// its own parent; anywhere else squash @.
-    fn squash_dwim(&mut self, args: Vec<String>) {
-        let value = self
-            .panes
-            .last()
-            .map(|p| p.value_at_cursor())
-            .unwrap_or(SectionValue::Root);
-        let (desc, mut full) = match value {
-            SectionValue::File {
-                area: DiffArea::WorkingCopy,
-                path,
-            }
-            | SectionValue::Hunk {
-                area: DiffArea::WorkingCopy,
-                path,
-                ..
-            } => (
-                format!("squash {path}"),
-                vec!["squash".to_string(), "--".to_string(), path],
-            ),
-            SectionValue::Revision { change_id } => (
-                format!("squash {change_id}"),
-                vec!["squash".to_string(), "-r".to_string(), change_id],
-            ),
-            _ => (
-                "squash @".to_string(),
-                vec!["squash".to_string(), "-r".to_string(), "@".to_string()],
-            ),
+    /// Keeping the destination's description needs no editor, so that
+    /// variant runs in the background; combining descriptions hands over
+    /// the terminal.
+    fn squash(&mut self, desc: String, source: SquashSource, options: SquashOptions) {
+        let op = Squash {
+            source,
+            emptied: options.emptied,
         };
-        // Path arguments must stay last: insert the switches before "--".
-        let insert_at = full.iter().position(|a| a == "--").unwrap_or(full.len());
-        for (i, a) in args.into_iter().enumerate() {
-            full.insert(insert_at + i, a);
+        match options.description {
+            SquashDescription::UseDestination => self.run_bg(desc, move |jj| {
+                jj.squash(&op, &SquashMessage::UseDestination)
+            }),
+            SquashDescription::Combine => {
+                self.request_editor(desc, move |jj| jj.squash_in_editor(&op))
+            }
         }
-        self.request_editor(EditorRequest::new(desc, full));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::jj::op::{ChangeId, RepoPath};
+    use crate::ui::section::Group;
+
+    #[test]
+    fn squash_source_follows_point() {
+        let file = SectionValue::File {
+            area: DiffArea::WorkingCopy,
+            path: RepoPath::parse("a.txt").unwrap(),
+        };
+        assert_eq!(
+            squash_source(file),
+            SquashSource::WorkingCopyPath(RepoPath::parse("a.txt").unwrap())
+        );
+        let rev = SectionValue::Revision {
+            change_id: ChangeId::parse("xyz").unwrap(),
+        };
+        assert_eq!(
+            squash_source(rev),
+            SquashSource::Revision(Revset::parse("xyz").unwrap())
+        );
+        // A committed (read-only) diff is not a squash source: fall back to @.
+        let committed = SectionValue::File {
+            area: DiffArea::Committed,
+            path: RepoPath::parse("a.txt").unwrap(),
+        };
+        assert_eq!(
+            squash_source(committed),
+            SquashSource::Revision(Revset::working_copy())
+        );
+        assert_eq!(
+            squash_source(SectionValue::Group(Group::Changes)),
+            SquashSource::Revision(Revset::working_copy())
+        );
     }
 }

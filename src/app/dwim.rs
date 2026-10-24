@@ -3,11 +3,12 @@
 //! abandons a revision or restores (discards) a working-copy file depending
 //! on where point is.
 
+use crate::jj::op::{LogQuery, LogScope, Restore, Revset};
 use crate::jj::types::DiffArea;
 use crate::keymap::PaneKind;
 use crate::ui::section::{Group, SectionValue};
 
-use super::{svec, App, Confirm, PendingAction};
+use super::{App, Confirm, PendingAction};
 
 impl App {
     /// Copy the revision the current buffer is about (magit-copy-buffer-revision,
@@ -16,7 +17,7 @@ impl App {
     pub(super) fn copy_buffer_revision(&mut self) {
         let rev = match self.panes.last() {
             Some(p) if p.kind == PaneKind::Revision => p.title.clone(),
-            _ => self.rev_at_point(),
+            _ => self.rev_at_point().to_string(),
         };
         self.message = Some(format!("copied: {rev}"));
         self.clipboard_request = Some(rev);
@@ -30,9 +31,9 @@ impl App {
             return;
         };
         let value = match pane.value_at_cursor() {
-            SectionValue::Revision { change_id } => change_id,
-            SectionValue::Operation { op_id } => op_id,
-            SectionValue::File { path, .. } | SectionValue::Hunk { path, .. } => path,
+            SectionValue::Revision { change_id } => change_id.to_string(),
+            SectionValue::Operation { op_id } => op_id.to_string(),
+            SectionValue::File { path, .. } | SectionValue::Hunk { path, .. } => path.to_string(),
             _ => {
                 self.message = Some("nothing to copy here".into());
                 return;
@@ -47,7 +48,7 @@ impl App {
             return;
         };
         match pane.value_at_cursor() {
-            SectionValue::Revision { change_id } => self.load_revision(change_id, false),
+            SectionValue::Revision { change_id } => self.load_revision(change_id.into(), false),
             SectionValue::Operation { op_id } => self.load_op_show(op_id),
             _ => self.message = Some("nothing to visit here".into()),
         }
@@ -61,11 +62,12 @@ impl App {
         };
         match pane.value_at_cursor() {
             SectionValue::Revision { change_id } => {
+                let rev = Revset::from(change_id);
                 self.confirm = Some(Confirm {
-                    prompt: format!("Abandon revision {change_id}?"),
+                    prompt: format!("Abandon revision {rev}?"),
                     action: PendingAction::Jj {
-                        desc: format!("abandon {change_id}"),
-                        args: svec(&["abandon", "-r", &change_id]),
+                        desc: format!("abandon {rev}"),
+                        run: Box::new(move |jj| jj.abandon(&rev)),
                     },
                 });
             }
@@ -82,7 +84,7 @@ impl App {
                     prompt: format!("Restore {path} (discard its changes)?"),
                     action: PendingAction::Jj {
                         desc: format!("restore {path}"),
-                        args: svec(&["restore", "--", &path]),
+                        run: Box::new(move |jj| jj.restore(&Restore::Path(path))),
                     },
                 });
             }
@@ -91,7 +93,7 @@ impl App {
                     prompt: "Restore the whole working copy (discard all changes)?".into(),
                     action: PendingAction::Jj {
                         desc: "restore working copy".into(),
-                        args: svec(&["restore"]),
+                        run: Box::new(|jj| jj.restore(&Restore::WorkingCopy)),
                     },
                 });
             }
@@ -109,64 +111,63 @@ impl App {
         }
     }
 
+    /// The revision at point, or a "no revision at point" message.
+    fn revision_at_point(&mut self) -> Option<Revset> {
+        match self.panes.last().map(|p| p.value_at_cursor()) {
+            Some(SectionValue::Revision { change_id }) => Some(change_id.into()),
+            _ => {
+                self.message = Some("no revision at point".into());
+                None
+            }
+        }
+    }
+
     /// `e`: make the revision at point the working copy (`jj edit`).
     pub(super) fn edit_at_point(&mut self) {
-        match self.panes.last().map(|p| p.value_at_cursor()) {
-            Some(SectionValue::Revision { change_id }) => {
-                self.run_jj_bg(
-                    format!("edit {change_id}"),
-                    svec(&["edit", "-r", &change_id]),
-                );
-            }
-            _ => self.message = Some("no revision at point".into()),
+        if let Some(rev) = self.revision_at_point() {
+            self.run_bg(format!("edit {rev}"), move |jj| jj.edit(&rev));
         }
     }
 
     pub(super) fn duplicate_at_point(&mut self) {
-        match self.panes.last().map(|p| p.value_at_cursor()) {
-            Some(SectionValue::Revision { change_id }) => {
-                self.run_jj_bg(
-                    format!("duplicate {change_id}"),
-                    svec(&["duplicate", &change_id]),
-                );
-            }
-            _ => self.message = Some("no revision at point".into()),
+        if let Some(rev) = self.revision_at_point() {
+            self.run_bg(format!("duplicate {rev}"), move |jj| jj.duplicate(&rev));
         }
     }
 
     /// `a`: move each working-copy change into the mutable ancestor that
     /// last touched those lines.
     pub(super) fn absorb(&mut self) {
-        self.run_jj_bg("absorb".into(), svec(&["absorb"]));
+        self.run_bg("absorb", |jj| jj.absorb());
     }
 
     /// `S`: split the revision at point (or @). Interactive — jj opens the
     /// configured diff editor, so the terminal is handed over.
     pub(super) fn split_at_point(&mut self) {
         let rev = self.rev_at_point();
-        self.request_editor(super::EditorRequest::new(
-            format!("split {rev}"),
-            svec(&["split", "-r", &rev]),
-        ));
+        self.request_editor(format!("split {rev}"), move |jj| jj.split_in_editor(&rev));
     }
 
     /// `v`: how the revision at point evolved (`jj evolog`).
     pub(super) fn evolog_at_point(&mut self) {
         let rev = self.rev_at_point();
-        let args = svec(&["evolog", "-r", &rev]);
-        self.load_log(format!("evolog of {rev}"), args, false);
+        let query = LogQuery {
+            scope: LogScope::Evolution(rev.clone()),
+            limit: None,
+        };
+        self.load_log(format!("evolog of {rev}"), query, false);
     }
 
     /// `r` in the op-log buffer: roll the repo back to the operation at
     /// point (itself undoable, but still confirmed).
     pub(super) fn op_restore_at_point(&mut self) {
         match self.panes.last().map(|p| p.value_at_cursor()) {
-            Some(SectionValue::Operation { op_id }) => {
+            Some(SectionValue::Operation { op_id: op }) => {
                 self.confirm = Some(Confirm {
-                    prompt: format!("Restore the repo to operation {op_id}?"),
+                    prompt: format!("Restore the repo to operation {op}?"),
                     action: PendingAction::Jj {
-                        desc: format!("op restore {op_id}"),
-                        args: svec(&["op", "restore", &op_id]),
+                        desc: format!("op restore {op}"),
+                        run: Box::new(move |jj| jj.op_restore(&op)),
                     },
                 });
             }

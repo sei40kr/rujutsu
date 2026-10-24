@@ -32,7 +32,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             f,
             &app.theme,
             area,
-            transient.def.title,
+            transient.title(),
             transient.render_lines(&app.theme),
         );
     } else if !app.pending.is_empty() {

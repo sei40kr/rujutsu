@@ -1,6 +1,10 @@
-//! Pure domain types shared by the jj layer and the UI.
+//! Pure domain types shared by the jj layer and the UI. Ids, names and
+//! paths are the `op` value objects, so what the parser hands out can go
+//! straight back into an operation.
 
 use std::sync::Arc;
+
+use super::op::{BookmarkRef, ChangeId, CommitId, OperationId, RepoPath, Revset};
 
 /// Which diff a file or hunk belongs to. Commands dispatch on this.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -23,11 +27,11 @@ pub struct Hunk {
     pub lines: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileDiff {
-    pub path: String,
+    pub path: RepoPath,
     /// Set for renames: the pre-rename path.
-    pub old_path: Option<String>,
+    pub old_path: Option<RepoPath>,
     pub is_new: bool,
     pub is_deleted: bool,
     pub is_binary: bool,
@@ -35,6 +39,18 @@ pub struct FileDiff {
 }
 
 impl FileDiff {
+    /// An unchanged-looking entry for `path`; the parser fills in the rest.
+    pub fn new(path: RepoPath) -> Self {
+        Self {
+            path,
+            old_path: None,
+            is_new: false,
+            is_deleted: false,
+            is_binary: false,
+            hunks: Vec::new(),
+        }
+    }
+
     pub fn status_word(&self) -> &'static str {
         if self.is_new {
             "new file"
@@ -48,20 +64,20 @@ impl FileDiff {
     }
 }
 
-/// One revision parsed from the log template (see `client::LOG_TEMPLATE`).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// One revision parsed from the log template (see `cli::LOG_TEMPLATE`).
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RevEntry {
     /// Graph prefix preceding the template output ("@  ", "○  ", ""), kept
     /// verbatim for display.
     pub graph: String,
-    /// Shortest-unique change id prefix (8 chars).
-    pub change_id: String,
-    pub commit_id: String,
+    /// Shortest-unique prefix (8 chars).
+    pub change_id: ChangeId,
+    pub commit_id: CommitId,
     /// Length of the unique prefix of `change_id` / `commit_id`.
     pub change_id_prefix_len: usize,
     pub commit_id_prefix_len: usize,
-    /// Space-separated bookmark names ("main main@origin"), possibly empty.
-    pub bookmarks: String,
+    pub bookmarks: Vec<BookmarkRef>,
+    /// Space-separated tag names, possibly empty.
     pub tags: String,
     /// First line of the description; empty when undescribed.
     pub subject: String,
@@ -86,10 +102,10 @@ pub enum LogRow {
 }
 
 /// One operation parsed from the op-log template.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpEntry {
     pub graph: String,
-    pub id: String,
+    pub id: OperationId,
     pub description: String,
     pub time: String,
     pub is_current: bool,
@@ -101,11 +117,11 @@ pub enum OpLogRow {
     Graph(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BookmarkInfo {
-    pub name: String,
-    /// `None` for local bookmarks, the remote name for remote-tracking ones.
-    pub remote: Option<String>,
+/// What a revision buffer shows: jj's header text and the parsed diff.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RevisionView {
+    pub header: String,
+    pub files: Vec<FileDiff>,
 }
 
 /// Everything the status buffer needs, read in one refresh pass.
@@ -116,7 +132,7 @@ pub struct StatusSnapshot {
     /// Parents of @.
     pub parents: Vec<RevEntry>,
     /// Paths with unresolved conflicts in @.
-    pub conflicts: Vec<String>,
+    pub conflicts: Vec<RepoPath>,
     /// Diff of @ against its parents. `Arc`-shared with the status pane,
     /// which needs the same diffs for dispatch — a large diff must not be
     /// deep-copied per refresh.
@@ -124,5 +140,23 @@ pub struct StatusSnapshot {
     /// The log section (default revset), graph rows included.
     pub log: Vec<LogRow>,
     /// All bookmarks, for pickers.
-    pub bookmarks: Vec<BookmarkInfo>,
+    pub bookmarks: Vec<BookmarkRef>,
+}
+
+/// Bookmarks plus a few revset symbols worth offering for completion.
+pub fn rev_candidates(snapshot: Option<&StatusSnapshot>) -> Vec<Revset> {
+    let mut out = vec![
+        Revset::working_copy(),
+        Revset::working_copy().parents(),
+        Revset::parse("trunk()").expect("literal revset"),
+    ];
+    if let Some(s) = snapshot {
+        for b in &s.bookmarks {
+            let r = Revset::parse(&b.to_string()).expect("bookmark refs are non-empty");
+            if !out.contains(&r) {
+                out.push(r);
+            }
+        }
+    }
+    out
 }

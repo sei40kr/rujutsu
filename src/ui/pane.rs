@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use crate::command::{FoldCmd, NavCmd};
+use crate::jj::op::{LogQuery, RepoPath, Revset};
 use crate::jj::types::{DiffArea, FileDiff};
 use crate::keymap::PaneKind;
 use crate::ui::section::{flatten, FlatLine, Section, SectionId, SectionValue};
@@ -23,12 +24,10 @@ pub struct Pane {
     /// from; `committed` is owned by the revision pane that loaded it.
     pub wc_diff: Arc<Vec<FileDiff>>,
     pub committed: Vec<FileDiff>,
-    /// For a `Log` pane: the full jj argument list (subcommand included,
-    /// e.g. `["log", "-r", "::"]` or `["evolog", "-r", "xyz"]`) that
-    /// produced it, so `g` can re-run the same query.
-    pub log_args: Option<Vec<String>>,
+    /// For a `Log` pane: the query that produced it, so `g` can re-run it.
+    pub log_query: Option<LogQuery>,
     /// For a `Revision` pane: the revision it shows, so `g` can reload it.
-    pub rev: Option<String>,
+    pub rev: Option<Revset>,
     /// Memoized `find_matches` result for the query; dropped whenever `flat`
     /// is rebuilt.
     search_cache: Option<(String, Vec<usize>)>,
@@ -57,7 +56,7 @@ impl Pane {
             top: 0,
             wc_diff: Arc::default(),
             committed: Vec::new(),
-            log_args: None,
+            log_query: None,
             rev: None,
             search_cache: None,
         }
@@ -82,12 +81,12 @@ impl Pane {
             .unwrap_or(SectionValue::Root)
     }
 
-    pub fn find_file(&self, area: DiffArea, path: &str) -> Option<&FileDiff> {
+    pub fn find_file(&self, area: DiffArea, path: &RepoPath) -> Option<&FileDiff> {
         let list: &[FileDiff] = match area {
             DiffArea::WorkingCopy => &self.wc_diff,
             DiffArea::Committed => &self.committed,
         };
-        list.iter().find(|f| f.path == path)
+        list.iter().find(|f| f.path == *path)
     }
 
     // ---- navigation ------------------------------------------------------

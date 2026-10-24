@@ -3,8 +3,9 @@
 
 use std::thread;
 
-use crate::jj::client::{display_cmd, ProcessEntry};
-use crate::jj::types::{FileDiff, LogRow, OpLogRow, StatusSnapshot};
+use crate::jj::op::{LogQuery, OperationId, Revset};
+use crate::jj::types::{LogRow, OpLogRow, RevisionView, StatusSnapshot};
+use crate::jj::{Jj, JjError, Outcome};
 use crate::keymap::PaneKind;
 use crate::ui::build;
 use crate::ui::pane::Pane;
@@ -17,25 +18,22 @@ const PROCESS_LOG_MAX: usize = 200;
 
 impl App {
     /// Run a jj mutation on a worker thread; completion triggers a refresh.
-    pub(super) fn run_jj_bg(&mut self, desc: String, args: Vec<String>) {
+    pub(super) fn run_bg(
+        &mut self,
+        desc: impl Into<String>,
+        op: impl FnOnce(&dyn Jj) -> Result<Outcome, JjError> + Send + 'static,
+    ) {
+        let desc = desc.into();
         self.busy = Some(desc.clone());
         let jj = self.jj.clone();
         let tx = self.tx.clone();
         thread::spawn(move || {
-            let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-            let entry = match jj.run(&arg_refs) {
-                Ok(out) => ProcessEntry {
-                    cmd: display_cmd(&args),
-                    status: out.status,
-                    output: format!("{}{}", out.stdout, out.stderr),
-                },
-                Err(e) => ProcessEntry {
-                    cmd: display_cmd(&args),
-                    status: -1,
-                    output: e.to_string(),
-                },
-            };
-            let _ = tx.send(AppEvent::JjDone { desc, entry });
+            let outcome = op(&*jj).unwrap_or_else(|e| Outcome {
+                cmd: "jj".into(),
+                status: -1,
+                output: e.to_string(),
+            });
+            let _ = tx.send(AppEvent::JjDone { desc, outcome });
         });
     }
 
@@ -45,9 +43,9 @@ impl App {
         if let Some(pane) = self.panes.last() {
             match pane.kind {
                 PaneKind::Log => {
-                    if let Some(args) = pane.log_args.clone() {
+                    if let Some(query) = pane.log_query.clone() {
                         let title = pane.title.clone();
-                        self.load_log(title, args, true);
+                        self.load_log(title, query, true);
                         return;
                     }
                 }
@@ -67,20 +65,18 @@ impl App {
         self.refresh();
     }
 
-    /// Read a log-like buffer on a worker thread. `args` is the full jj
-    /// argument list before the template (e.g. `["log", "-r", "::"]` or
-    /// `["evolog", "-r", "xyz"]`), stored on the pane so `g` reproduces the
-    /// same query. `replace` refreshes the current log pane instead of
-    /// opening a new one.
-    pub(super) fn load_log(&mut self, title: String, args: Vec<String>, replace: bool) {
+    /// Read a log-like buffer on a worker thread. The query is stored on the
+    /// pane so `g` reproduces it. `replace` refreshes the current log pane
+    /// instead of opening a new one.
+    pub(super) fn load_log(&mut self, title: String, query: LogQuery, replace: bool) {
         self.busy = Some(title.clone());
         let jj = self.jj.clone();
         let tx = self.tx.clone();
         thread::spawn(move || {
-            let rows = jj.read_log(&args).unwrap_or_default();
+            let rows = jj.log(&query).unwrap_or_default();
             let _ = tx.send(AppEvent::LogReady {
                 title,
-                args,
+                query,
                 rows,
                 replace,
             });
@@ -88,19 +84,13 @@ impl App {
     }
 
     /// Read one revision's header and diff for a revision buffer.
-    pub(super) fn load_revision(&mut self, rev: String, replace: bool) {
+    pub(super) fn load_revision(&mut self, rev: Revset, replace: bool) {
         self.busy = Some(format!("loading {rev}"));
         let jj = self.jj.clone();
         let tx = self.tx.clone();
         thread::spawn(move || {
-            let (header, diff) = jj.read_revision(&rev).unwrap_or_default();
-            let files = crate::jj::parse::parse_diff(&diff);
-            let _ = tx.send(AppEvent::RevisionReady {
-                rev,
-                header,
-                files,
-                replace,
-            });
+            let view = jj.revision(&rev).unwrap_or_default();
+            let _ = tx.send(AppEvent::RevisionReady { rev, view, replace });
         });
     }
 
@@ -109,18 +99,18 @@ impl App {
         let jj = self.jj.clone();
         let tx = self.tx.clone();
         thread::spawn(move || {
-            let rows = jj.read_op_log().unwrap_or_default();
+            let rows = jj.op_log().unwrap_or_default();
             let _ = tx.send(AppEvent::OpLogReady { rows, replace });
         });
     }
 
-    pub(super) fn load_op_show(&mut self, op_id: String) {
-        self.busy = Some(format!("loading op {op_id}"));
+    pub(super) fn load_op_show(&mut self, op: OperationId) {
+        self.busy = Some(format!("loading op {op}"));
         let jj = self.jj.clone();
         let tx = self.tx.clone();
         thread::spawn(move || {
-            let text = jj.read_op_show(&op_id).unwrap_or_default();
-            let _ = tx.send(AppEvent::OpShowReady { op_id, text });
+            let text = jj.op_show(&op).unwrap_or_default();
+            let _ = tx.send(AppEvent::OpShowReady { op, text });
         });
     }
 
@@ -139,18 +129,19 @@ impl App {
         self.refresh_gen += 1;
         let gen = self.refresh_gen;
         let jj = self.jj.clone();
+        let log_revset = self.log_revset.clone();
         let tx = self.tx.clone();
         thread::spawn(move || {
-            let result = jj.read_snapshot().map_err(|e| e.to_string());
+            let result = jj.snapshot(log_revset.as_ref()).map_err(|e| e.to_string());
             let _ = tx.send(AppEvent::SnapshotReady { gen, result });
         });
     }
 
     /// A background jj mutation finished: record it and refresh.
-    pub(super) fn on_jj_done(&mut self, desc: String, entry: ProcessEntry) {
+    pub(super) fn on_jj_done(&mut self, desc: String, outcome: Outcome) {
         self.busy = None;
-        if entry.status != 0 {
-            let first = entry
+        if outcome.status != 0 {
+            let first = outcome
                 .output
                 .lines()
                 .find(|l| !l.trim().is_empty())
@@ -160,7 +151,7 @@ impl App {
         } else {
             self.message = Some(format!("{desc} done"));
         }
-        self.push_process_entry(entry);
+        self.push_process_entry(outcome);
         self.refresh_process_log_pane();
         self.refresh_current_and_status();
     }
@@ -182,7 +173,7 @@ impl App {
     pub(super) fn on_log_ready(
         &mut self,
         title: String,
-        args: Vec<String>,
+        query: LogQuery,
         rows: Vec<LogRow>,
         replace: bool,
     ) {
@@ -192,38 +183,32 @@ impl App {
         if replace && top_is_log {
             if let Some(pane) = self.panes.last_mut() {
                 pane.title = title;
-                pane.log_args = Some(args);
+                pane.log_query = Some(query);
                 pane.replace_tree(root);
             }
         } else {
             let mut pane = Pane::new(PaneKind::Log, title, root);
-            pane.log_args = Some(args);
+            pane.log_query = Some(query);
             self.panes.push(pane);
         }
     }
 
     /// Revision data arrived: open a revision buffer, or refresh the top one.
-    pub(super) fn on_revision_ready(
-        &mut self,
-        rev: String,
-        header: String,
-        files: Vec<FileDiff>,
-        replace: bool,
-    ) {
+    pub(super) fn on_revision_ready(&mut self, rev: Revset, view: RevisionView, replace: bool) {
         self.busy = None;
-        let root = build::build_revision(&self.theme, &header, &files);
+        let root = build::build_revision(&self.theme, &view.header, &view.files);
         let top_is_rev = self.panes.last().map(|p| p.kind) == Some(PaneKind::Revision);
         if replace && top_is_rev {
             if let Some(pane) = self.panes.last_mut() {
-                pane.title = rev.clone();
+                pane.title = rev.to_string();
                 pane.rev = Some(rev);
-                pane.committed = files;
+                pane.committed = view.files;
                 pane.replace_tree(root);
             }
         } else {
-            let mut pane = Pane::new(PaneKind::Revision, rev.clone(), root);
+            let mut pane = Pane::new(PaneKind::Revision, rev.to_string(), root);
             pane.rev = Some(rev);
-            pane.committed = files;
+            pane.committed = view.files;
             self.panes.push(pane);
         }
     }
@@ -242,9 +227,9 @@ impl App {
         }
     }
 
-    pub(super) fn on_op_show_ready(&mut self, op_id: String, text: String) {
+    pub(super) fn on_op_show_ready(&mut self, op: OperationId, text: String) {
         self.busy = None;
-        let title = format!("operation {op_id}");
+        let title = format!("operation {op}");
         let root = build::build_text(&title, &self.theme, &text);
         self.panes.push(Pane::new(PaneKind::OpShow, title, root));
     }
@@ -274,17 +259,18 @@ impl App {
     }
 
     /// The editor ran in the foreground; record the result and refresh.
-    pub fn on_editor_done(&mut self, desc: String, args: Vec<String>, status: i32) {
-        self.push_process_entry(ProcessEntry {
-            cmd: display_cmd(&args),
-            status,
-            output: String::new(), // stdio was inherited by the editor
+    pub fn on_editor_done(&mut self, desc: String, outcome: Result<Outcome, JjError>) {
+        let outcome = outcome.unwrap_or_else(|e| Outcome {
+            cmd: "jj".into(),
+            status: -1,
+            output: e.to_string(),
         });
-        self.message = Some(if status == 0 {
+        self.message = Some(if outcome.ok() {
             format!("{desc} done")
         } else {
-            format!("{desc} exited with {status}")
+            format!("{desc} exited with {}", outcome.status)
         });
+        self.push_process_entry(outcome);
         self.refresh_process_log_pane();
         self.refresh_current_and_status();
     }
@@ -323,7 +309,7 @@ impl App {
         }
     }
 
-    fn push_process_entry(&mut self, entry: ProcessEntry) {
+    fn push_process_entry(&mut self, entry: Outcome) {
         self.process_log.push(entry);
         if self.process_log.len() > PROCESS_LOG_MAX {
             let excess = self.process_log.len() - PROCESS_LOG_MAX;

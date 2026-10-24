@@ -10,6 +10,8 @@ pkgs.mkShell {
     pkgs.clippy
     pkgs.rustfmt
     pkgs.rust-analyzer
+    # The integration tests run the real binary and fail without it.
+    pkgs.jujutsu
   ]
   # Runtime clipboard tools for the `y s` / `y b` copy commands. macOS ships
   # `pbcopy`, so these are only needed on Linux (Wayland / X11).

@@ -14,12 +14,13 @@ use ratatui::crossterm::ExecutableCommand;
 use ratatui::Terminal;
 
 use crate::app::{App, AppEvent, EditorRequest};
-use rujutsu::jj::client::JjClient;
+use rujutsu::jj::cli::JjCli;
+use rujutsu::jj::op::Revset;
 
 fn main() -> Result<()> {
     let cwd = std::env::current_dir()?;
-    let mut jj =
-        JjClient::discover(&cwd).context("not inside a jj repository (or jj is not installed)")?;
+    let jj =
+        JjCli::discover(&cwd).context("not inside a jj repository (or jj is not installed)")?;
 
     let (cfg, mut warnings) = config::load();
     let mut keymaps = keymap::default_keymaps();
@@ -27,14 +28,19 @@ fn main() -> Result<()> {
     let mut theme = config::base_theme(&cfg, &mut warnings);
     config::apply_colors(&cfg, &mut theme, &mut warnings);
     let scrolloff = cfg.scrolloff.unwrap_or(3);
-    jj.log_revset = cfg.log_revset.clone();
 
     let (tx, rx) = crossbeam_channel::unbounded::<AppEvent>();
     let input_paused = Arc::new(AtomicBool::new(false));
     event::spawn_input_thread(tx.clone(), input_paused.clone());
     let _watcher = event::spawn_repo_watcher(tx.clone(), &jj.jj_dir);
 
-    let mut app = App::new(jj, tx, keymaps, theme, scrolloff);
+    let mut app = App::new(Arc::new(jj), tx, keymaps, theme, scrolloff);
+    if let Some(revset) = cfg.log_revset.as_deref() {
+        match Revset::parse(revset) {
+            Ok(r) => app.log_revset = Some(r),
+            Err(e) => warnings.push(format!("config: log_revset: {e}")),
+        }
+    }
     if let Some(w) = warnings.first() {
         app.message = Some(w.clone());
     }
@@ -194,20 +200,14 @@ fn run_editor(
     disable_raw_mode()?;
     stdout().execute(LeaveAlternateScreen)?;
 
-    let status = ProcessCommand::new("jj")
-        .args(&req.args)
-        .envs(req.envs.iter().cloned())
-        .current_dir(&app.jj.workspace_root)
-        .status()
-        .map(|s| s.code().unwrap_or(-1))
-        .unwrap_or(-1);
+    let outcome = (req.run)(&*app.jj);
 
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
     terminal.clear()?;
     input_paused.store(false, Ordering::SeqCst);
 
-    app.on_editor_done(req.desc, req.args, status);
+    app.on_editor_done(req.desc, outcome);
     Ok(())
 }
 

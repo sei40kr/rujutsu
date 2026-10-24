@@ -68,18 +68,24 @@ impl App {
                 TransientResult::Unbound => {
                     self.message = Some("key not bound in this menu".into());
                 }
-                TransientResult::Prompt { flag, desc } => {
+                TransientResult::Prompt { key, desc } => {
                     // Prompt for the value over the still-open transient; the
-                    // submit callback writes it back into `transient.values`.
-                    self.input = Some(Input::plain(desc, move |app, value| {
-                        if let Some(t) = app.transient.as_mut() {
-                            t.set_value(flag, value);
-                        }
-                    }));
+                    // submit callback hands it back to the menu to parse.
+                    // An empty answer clears the value.
+                    self.input = Some(
+                        Input::plain(desc, move |app, value| {
+                            if let Some(t) = app.transient.as_mut() {
+                                if let Err(e) = t.set_value(key, &value) {
+                                    app.message = Some(e);
+                                }
+                            }
+                        })
+                        .allow_empty(),
+                    );
                 }
-                TransientResult::Invoke(action, args) => {
+                TransientResult::Invoke(action) => {
                     self.transient = None;
-                    self.invoke_transient(action, args);
+                    self.invoke_transient(action);
                 }
             }
             return;
@@ -126,7 +132,7 @@ impl App {
             KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter
         ) {
             match confirm.action {
-                PendingAction::Jj { desc, args } => self.run_jj_bg(desc, args),
+                PendingAction::Jj { desc, run } => self.run_bg(desc, run),
             }
         } else {
             self.message = Some("aborted".into());

@@ -1,8 +1,11 @@
-//! Bookmark actions: create/set/delete/rename/track/untrack/forget.
+//! Bookmark actions: create/set/delete/rename/track/untrack/forget. Names
+//! typed or picked in the minibuffer are parsed into `BookmarkName` /
+//! `RemoteBookmark` here, so a malformed one is reported before jj sees it.
 
+use crate::jj::op::{BookmarkName, BookmarkOp, BookmarkRef, RemoteBookmark};
 use crate::ui::transient::TransientAction;
 
-use super::super::{svec, App, Confirm, Input, PendingAction};
+use super::super::{App, Confirm, Input, PendingAction};
 
 impl App {
     /// Local bookmark names, for pickers.
@@ -12,8 +15,8 @@ impl App {
             .map(|s| {
                 s.bookmarks
                     .iter()
-                    .filter(|b| b.remote.is_none())
-                    .map(|b| b.name.clone())
+                    .filter(|b| matches!(b, BookmarkRef::Local(_)))
+                    .map(ToString::to_string)
                     .collect()
             })
             .unwrap_or_default()
@@ -26,14 +29,25 @@ impl App {
             .map(|s| {
                 s.bookmarks
                     .iter()
-                    .filter_map(|b| {
-                        b.remote
-                            .as_ref()
-                            .map(|remote| format!("{}@{}", b.name, remote))
-                    })
+                    .filter(|b| matches!(b, BookmarkRef::Remote(_)))
+                    .map(ToString::to_string)
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    fn bookmark_bg(&mut self, desc: String, op: BookmarkOp) {
+        self.run_bg(desc, move |jj| jj.bookmark(&op));
+    }
+
+    fn bookmark_confirm(&mut self, prompt: String, desc: String, op: BookmarkOp) {
+        self.confirm = Some(Confirm {
+            prompt,
+            action: PendingAction::Jj {
+                desc,
+                run: Box::new(move |jj| jj.bookmark(&op)),
+            },
+        });
     }
 
     pub(super) fn bookmark_action(&mut self, action: TransientAction) {
@@ -45,11 +59,13 @@ impl App {
         let input = match action {
             TransientAction::BookmarkCreate => Some(Input::plain(
                 format!("Create bookmark at {rev}"),
-                move |app, name| {
-                    app.run_jj_bg(
-                        format!("create bookmark {name}"),
-                        svec(&["bookmark", "create", &name, "-r", &rev]),
-                    );
+                move |app, text| {
+                    if let Some(name) = app.accept(BookmarkName::parse(&text)) {
+                        app.bookmark_bg(
+                            format!("create bookmark {name}"),
+                            BookmarkOp::Create { name, at: rev },
+                        );
+                    }
                 },
             )),
             TransientAction::BookmarkSet => self
@@ -58,46 +74,57 @@ impl App {
                     Input::picker(
                         format!("Move bookmark to {rev}"),
                         cands,
-                        move |app, name| {
-                            app.run_jj_bg(
-                                format!("move bookmark {name} to {rev}"),
-                                svec(&["bookmark", "set", &name, "-r", &rev]),
-                            );
+                        move |app, text| {
+                            if let Some(name) = app.accept(BookmarkName::parse(&text)) {
+                                app.bookmark_bg(
+                                    format!("move bookmark {name} to {rev}"),
+                                    BookmarkOp::Set { name, at: rev },
+                                );
+                            }
                         },
                     )
                 }),
             TransientAction::BookmarkDelete => self
                 .bookmark_picker(self.local_bookmarks(), "local bookmarks")
                 .map(|cands| {
-                    Input::picker("Delete bookmark", cands, |app, name| {
-                        app.confirm = Some(Confirm {
-                            prompt: format!("Delete bookmark {name}?"),
-                            action: PendingAction::Jj {
-                                desc: format!("delete bookmark {name}"),
-                                args: svec(&["bookmark", "delete", &name]),
-                            },
-                        });
+                    Input::picker("Delete bookmark", cands, |app, text| {
+                        if let Some(name) = app.accept(BookmarkName::parse(&text)) {
+                            app.bookmark_confirm(
+                                format!("Delete bookmark {name}?"),
+                                format!("delete bookmark {name}"),
+                                BookmarkOp::Delete(name),
+                            );
+                        }
                     })
                 }),
             TransientAction::BookmarkRename => self
                 .bookmark_picker(self.local_bookmarks(), "local bookmarks")
                 .map(|cands| {
-                    Input::picker("Rename bookmark", cands, |app, old| {
+                    Input::picker("Rename bookmark", cands, |app, text| {
+                        let Some(from) = app.accept(BookmarkName::parse(&text)) else {
+                            return;
+                        };
                         // Second prompt: the new name, with the old one closed over.
-                        app.input =
-                            Some(Input::plain(format!("Rename {old} to"), move |app, new| {
-                                app.run_jj_bg(
-                                    format!("rename bookmark {old} to {new}"),
-                                    svec(&["bookmark", "rename", &old, &new]),
-                                );
-                            }));
+                        app.input = Some(Input::plain(
+                            format!("Rename {from} to"),
+                            move |app, text| {
+                                if let Some(to) = app.accept(BookmarkName::parse(&text)) {
+                                    app.bookmark_bg(
+                                        format!("rename bookmark {from} to {to}"),
+                                        BookmarkOp::Rename { from, to },
+                                    );
+                                }
+                            },
+                        ));
                     })
                 }),
             TransientAction::BookmarkTrack => self
                 .bookmark_picker(self.remote_bookmarks(), "remote bookmarks")
                 .map(|cands| {
-                    Input::picker("Track remote bookmark (name@remote)", cands, |app, name| {
-                        app.run_jj_bg(format!("track {name}"), svec(&["bookmark", "track", &name]));
+                    Input::picker("Track remote bookmark (name@remote)", cands, |app, text| {
+                        if let Some(b) = app.accept(RemoteBookmark::parse(&text)) {
+                            app.bookmark_bg(format!("track {b}"), BookmarkOp::Track(b));
+                        }
                     })
                 }),
             TransientAction::BookmarkUntrack => self
@@ -106,25 +133,24 @@ impl App {
                     Input::picker(
                         "Untrack remote bookmark (name@remote)",
                         cands,
-                        |app, name| {
-                            app.run_jj_bg(
-                                format!("untrack {name}"),
-                                svec(&["bookmark", "untrack", &name]),
-                            );
+                        |app, text| {
+                            if let Some(b) = app.accept(RemoteBookmark::parse(&text)) {
+                                app.bookmark_bg(format!("untrack {b}"), BookmarkOp::Untrack(b));
+                            }
                         },
                     )
                 }),
             TransientAction::BookmarkForget => self
                 .bookmark_picker(self.local_bookmarks(), "local bookmarks")
                 .map(|cands| {
-                    Input::picker("Forget bookmark", cands, |app, name| {
-                        app.confirm = Some(Confirm {
-                            prompt: format!("Forget bookmark {name}?"),
-                            action: PendingAction::Jj {
-                                desc: format!("forget bookmark {name}"),
-                                args: svec(&["bookmark", "forget", &name]),
-                            },
-                        });
+                    Input::picker("Forget bookmark", cands, |app, text| {
+                        if let Some(name) = app.accept(BookmarkName::parse(&text)) {
+                            app.bookmark_confirm(
+                                format!("Forget bookmark {name}?"),
+                                format!("forget bookmark {name}"),
+                                BookmarkOp::Forget(name),
+                            );
+                        }
                     })
                 }),
             _ => unreachable!("routed by invoke_transient"),

@@ -1,35 +1,36 @@
-//! Git-interop actions: `jj git fetch` and `jj git push`.
+//! Git-interop actions: fetch and push.
 
+use crate::jj::op::{BookmarkName, BookmarkRef, Fetch, Push, PushScope};
 use crate::ui::transient::TransientAction;
 
 use super::super::{App, Input};
 
 impl App {
-    pub(super) fn remote_action(&mut self, action: TransientAction, args: Vec<String>) {
+    pub(super) fn remote_action(&mut self, action: TransientAction) {
         match action {
-            TransientAction::Fetch => {
-                self.run_jj_bg("fetch".into(), vec!["git".into(), "fetch".into()]);
+            TransientAction::Fetch(op) => {
+                let desc = match op {
+                    Fetch::DefaultRemote => "fetch",
+                    Fetch::AllRemotes => "fetch all remotes",
+                };
+                self.run_bg(desc, move |jj| jj.fetch(&op));
             }
-            TransientAction::FetchAllRemotes => {
-                self.run_jj_bg(
-                    "fetch all remotes".into(),
-                    vec!["git".into(), "fetch".into(), "--all-remotes".into()],
-                );
+            TransientAction::Push(options) => {
+                let op = Push {
+                    scope: PushScope::Tracked,
+                    options,
+                };
+                self.run_bg("push", move |jj| jj.push(&op));
             }
-            TransientAction::Push => {
-                let mut full = vec!["git".to_string(), "push".to_string()];
-                full.extend(args);
-                self.run_jj_bg("push".into(), full);
-            }
-            TransientAction::PushBookmark => {
+            TransientAction::PushBookmark(options) => {
                 let candidates: Vec<String> = self
                     .snapshot
                     .as_ref()
                     .map(|s| {
                         s.bookmarks
                             .iter()
-                            .filter(|b| b.remote.is_none())
-                            .map(|b| b.name.clone())
+                            .filter(|b| matches!(b, BookmarkRef::Local(_)))
+                            .map(ToString::to_string)
                             .collect()
                     })
                     .unwrap_or_default();
@@ -39,29 +40,28 @@ impl App {
                     self.input = Some(Input::picker(
                         "Push bookmark",
                         candidates,
-                        move |app, bookmark| {
-                            let mut full = vec![
-                                "git".to_string(),
-                                "push".to_string(),
-                                "--bookmark".to_string(),
-                                bookmark.clone(),
-                            ];
-                            full.extend(args);
-                            app.run_jj_bg(format!("push {bookmark}"), full);
+                        move |app, text| {
+                            let Some(name) = app.accept(BookmarkName::parse(&text)) else {
+                                return;
+                            };
+                            let desc = format!("push {name}");
+                            let op = Push {
+                                scope: PushScope::Bookmark(name),
+                                options,
+                            };
+                            app.run_bg(desc, move |jj| jj.push(&op));
                         },
                     ));
                 }
             }
-            TransientAction::PushChange => {
+            TransientAction::PushChange(options) => {
                 let rev = self.rev_at_point();
-                let mut full = vec![
-                    "git".to_string(),
-                    "push".to_string(),
-                    "--change".to_string(),
-                    rev.clone(),
-                ];
-                full.extend(args);
-                self.run_jj_bg(format!("push change {rev}"), full);
+                let desc = format!("push change {rev}");
+                let op = Push {
+                    scope: PushScope::Change(rev),
+                    options,
+                };
+                self.run_bg(desc, move |jj| jj.push(&op));
             }
             _ => unreachable!("routed by invoke_transient"),
         }

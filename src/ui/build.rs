@@ -8,8 +8,8 @@ use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
-use crate::jj::client::ProcessEntry;
 use crate::jj::types::{DiffArea, FileDiff, LogRow, OpLogRow, RevEntry, StatusSnapshot};
+use crate::jj::Outcome;
 use crate::theme::Theme;
 use crate::ui::section::{Group, Section, SectionValue};
 
@@ -107,14 +107,14 @@ fn rev_header_line(t: &Theme, label: &str, rev: &RevEntry) -> Line<'static> {
     let mut spans = vec![Span::styled(format!("{label} "), Style::new().dim())];
     spans.extend(id_spans(
         t,
-        &rev.change_id,
+        rev.change_id.as_str(),
         rev.change_id_prefix_len,
         Style::new().fg(t.change_id).bold(),
     ));
     spans.push(Span::raw(" "));
     spans.extend(id_spans(
         t,
-        &rev.commit_id,
+        rev.commit_id.as_str(),
         rev.commit_id_prefix_len,
         Style::new().fg(t.commit_id),
     ));
@@ -137,7 +137,7 @@ fn id_spans(t: &Theme, id: &str, prefix_len: usize, prefix_style: Style) -> [Spa
 /// Bookmark/tag/state decorations shared by header and log rows.
 fn decoration_spans(t: &Theme, rev: &RevEntry) -> Vec<Span<'static>> {
     let mut out = Vec::new();
-    for b in rev.bookmarks.split_whitespace() {
+    for b in &rev.bookmarks {
         out.push(Span::styled(
             b.to_string(),
             Style::new().fg(t.bookmark).bold(),
@@ -240,7 +240,7 @@ fn rev_log_line(t: &Theme, e: &RevEntry) -> Line<'static> {
     let mut spans = vec![Span::styled(e.graph.clone(), graph_style)];
     spans.extend(id_spans(
         t,
-        &e.change_id,
+        e.change_id.as_str(),
         e.change_id_prefix_len,
         Style::new().fg(t.change_id).bold(),
     ));
@@ -310,7 +310,7 @@ fn pad_start(s: &str, cols: usize) -> String {
 pub fn file_section(t: &Theme, parent_id: u64, area: DiffArea, fd: &FileDiff) -> Section {
     let name = match &fd.old_path {
         Some(old) => format!("{old} -> {}", fd.path),
-        None => fd.path.clone(),
+        None => fd.path.to_string(),
     };
     let mut sec = Section::new(
         parent_id,
@@ -427,7 +427,7 @@ pub fn build_op_log(t: &Theme, rows: &[OpLogRow]) -> Section {
                     },
                     Line::from(vec![
                         Span::styled(op.graph.clone(), graph_style),
-                        Span::styled(op.id.clone(), Style::new().fg(t.op_id)),
+                        Span::styled(op.id.to_string(), Style::new().fg(t.op_id)),
                         Span::raw(" "),
                         Span::raw(op.description.clone()),
                     ]),
@@ -476,7 +476,7 @@ pub fn build_text(title: &str, t: &Theme, text: &str) -> Section {
 /// The `$` buffer: every jj command run by the app, newest last.
 /// `first_index` numbers the section keys when old entries have been
 /// trimmed, so surviving entries keep their identity (fold state, cursor).
-pub fn build_process_log(t: &Theme, entries: &[ProcessEntry], first_index: usize) -> Section {
+pub fn build_process_log(t: &Theme, entries: &[Outcome], first_index: usize) -> Section {
     let mut root = Section::root();
     if entries.is_empty() {
         root.push_body(Line::from(Span::styled(
@@ -511,19 +511,28 @@ pub fn build_process_log(t: &Theme, entries: &[ProcessEntry], first_index: usize
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::jj::op::{ChangeId, CommitId, OperationId, RepoPath};
     use crate::jj::types::OpEntry;
 
     fn rev(change_id: &str, subject: &str) -> RevEntry {
         RevEntry {
             graph: "○  ".into(),
-            change_id: change_id.into(),
-            commit_id: "abcd1234".into(),
+            change_id: ChangeId::parse(change_id).unwrap(),
+            commit_id: CommitId::parse("abcd1234").unwrap(),
             change_id_prefix_len: 1,
             commit_id_prefix_len: 2,
+            bookmarks: Vec::new(),
+            tags: String::new(),
             subject: subject.into(),
             author: "Ada".into(),
             date: "2 days ago".into(),
-            ..RevEntry::default()
+            is_working_copy: false,
+            has_conflict: false,
+            is_empty: false,
+            is_immutable: false,
+            is_root: false,
+            is_divergent: false,
+            is_hidden: false,
         }
     }
 
@@ -551,7 +560,7 @@ mod tests {
         assert_eq!(
             root.children[0].value,
             SectionValue::Revision {
-                change_id: "abc".into()
+                change_id: ChangeId::parse("abc").unwrap()
             }
         );
         // The graph line attaches to the preceding revision's body.
@@ -620,11 +629,8 @@ mod tests {
         let t = Theme::default();
         let snapshot = StatusSnapshot {
             working_copy: Some(rev("sym", "wip")),
-            conflicts: vec!["src/main.rs".into()],
-            diff: std::sync::Arc::new(vec![FileDiff {
-                path: "a.txt".into(),
-                ..FileDiff::default()
-            }]),
+            conflicts: vec![RepoPath::parse("src/main.rs").unwrap()],
+            diff: std::sync::Arc::new(vec![FileDiff::new(RepoPath::parse("a.txt").unwrap())]),
             log: vec![LogRow::Rev(rev("abc", "first"))],
             ..StatusSnapshot::default()
         };
@@ -646,7 +652,7 @@ mod tests {
         let rows = vec![
             OpLogRow::Op(OpEntry {
                 graph: "@  ".into(),
-                id: "abc123".into(),
+                id: OperationId::parse("abc123").unwrap(),
                 description: "snapshot working copy".into(),
                 time: "5 minutes ago".into(),
                 is_current: true,
@@ -657,7 +663,7 @@ mod tests {
         assert_eq!(
             root.children[0].value,
             SectionValue::Operation {
-                op_id: "abc123".into()
+                op_id: OperationId::parse("abc123").unwrap()
             }
         );
         assert_eq!(root.children[0].body[0].to_string(), "│");
