@@ -6,7 +6,7 @@
 //!                        # so it must precede any [table] header
 //!
 //! [keys.global]
-//! "g"   = "refresh"
+//! "g r" = "refresh"
 //! "P p" = "push"      # space-separated key sequences are supported
 //!
 //! [keys.status]

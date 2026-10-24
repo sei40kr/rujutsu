@@ -66,7 +66,7 @@ Defaults (override any of these via config; see below):
 | `k` / `↑` | Move up |
 | `C-d` / `PgDn` | Half page down |
 | `C-u` / `PgUp` | Half page up |
-| `Home` | Go to top |
+| `g g` / `Home` | Go to top |
 | `G` / `End` | Go to bottom |
 | `n` / `p` (also `z j` / `z k`) | Next / previous section |
 | `^` | Parent section |
@@ -83,7 +83,7 @@ Defaults (override any of these via config; see below):
 
 | Key | Action |
 | --- | --- |
-| `g` | Refresh |
+| `g r` | Refresh |
 | `x` | Abandon / restore |
 | `e` | Edit |
 | `a` | Absorb |
@@ -134,7 +134,7 @@ theme = "tokyo-night"  # a built-in preset; the base for the [colors] below.
 # log_revset = "ancestors(@, 20)"
 
 [keys.global]
-"g"   = "refresh"
+"g r" = "refresh"
 "P p" = "push"      # space-separated key sequences are supported
 
 [keys.status]

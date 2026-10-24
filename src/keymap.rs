@@ -299,7 +299,8 @@ pub fn default_keymaps() -> Keymaps {
     let mut global = Keymap::default();
     for (spec, cmd) in [
         ("q", Quit),
-        ("g", Refresh),
+        ("g r", Refresh),
+        ("g g", Nav(GotoTop)),
         ("j", Nav(MoveDown)),
         ("DOWN", Nav(MoveDown)),
         ("k", Nav(MoveUp)),
